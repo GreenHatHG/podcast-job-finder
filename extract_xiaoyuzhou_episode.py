@@ -9,6 +9,8 @@ from html.parser import HTMLParser
 
 import requests
 
+from http_user_agents import DEFAULT_BROWSER_USER_AGENT
+
 
 NEXT_DATA_SCRIPT_PATTERN = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
@@ -25,10 +27,7 @@ MISSING_NEXT_DATA_ERROR = "未找到 __NEXT_DATA__ 数据块。"
 INVALID_NEXT_DATA_ERROR = "__NEXT_DATA__ JSON 解析失败。"
 USAGE_TEXT = "用法：python3 extract_xiaoyuzhou_episode.py <episode_url>"
 REQUEST_TIMEOUT_SECONDS = 30
-REQUEST_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-)
+REQUEST_USER_AGENT = DEFAULT_BROWSER_USER_AGENT
 FETCH_URL_ERROR_TEMPLATE = "请求页面失败：{url}"
 INVALID_URL_ERROR_TEMPLATE = "URL 无效：{url}"
 DEBUG_LOG_PREFIX = "[debug]"
