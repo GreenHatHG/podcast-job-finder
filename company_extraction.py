@@ -181,10 +181,20 @@ def extract_companies_from_episode(
     last_failure_category = INVALID_RESULT_CATEGORY
     for attempt in range(1, effective_retry_config.max_attempts + 1):
         try:
+            if attempt == 1:
+                logger.info("LLM 调用中...")
+            else:
+                logger.info("LLM 重试中...（第 %d 次）", attempt)
             response_text = llm_client.generate(prompt)
             extraction_result = parse_company_extraction_output(
                 response_text,
                 company_blacklist=company_blacklist,
+            )
+            company_names = [c.name for c in extraction_result.companies]
+            logger.info(
+                "LLM 返回结果：%d 家公司 %s",
+                len(extraction_result.companies),
+                company_names,
             )
             if attempt > 1:
                 logger.debug("LLM 第 %s 次尝试成功。", attempt)

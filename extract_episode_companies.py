@@ -1,69 +1,123 @@
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
 import re
 import sys
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, Sequence
 
 from company_extraction import CompanyExtractionError, extract_companies_from_episode
 from extract_xiaoyuzhou_episode import EpisodeParseError, parse_episode_url
 from openai_compatible_llm import (
     EmptyLlmResponseError,
+    LlmRetryConfig,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmClient,
     OpenAiCompatibleLlmError,
     load_openai_compatible_config_from_env,
     load_llm_retry_config_from_env,
 )
+from xiaoyuzhou_auth_store import (
+    XiaoyuzhouAuthSession,
+    XiaoyuzhouAuthStoreError,
+    build_auth_session,
+    load_auth_session,
+    save_auth_session,
+    update_auth_session_tokens,
+)
+from xiaoyuzhou_xyz_client import (
+    DEFAULT_AREA_CODE,
+    DEFAULT_XYZ_BASE_URL,
+    EpisodeLoadMoreKey,
+    PodcastEpisodeSummary,
+    XyzClient,
+    XyzClientError,
+    XyzUnauthorizedError,
+)
 
 
-USAGE_TEXT: Final = "用法：python extract_episode_companies.py <episode_url>"
+PROGRAM_NAME: Final = "python extract_episode_companies.py"
+COMMAND_USAGE_TEXT: Final = "\n".join(
+    [
+        f"用法：{PROGRAM_NAME} <episode_url>",
+        f"      {PROGRAM_NAME} send-code --mobile <手机号> [--area-code +86]",
+        f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
+        f"      {PROGRAM_NAME} pid --pid <pid> [--all]",
+    ]
+)
 LOG_LEVEL_ENV: Final = "LOG_LEVEL"
-DEFAULT_LOG_LEVEL_NAME: Final = "WARNING"
+DEFAULT_LOG_LEVEL_NAME: Final = "INFO"
 COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"
 COMPANY_BLACKLIST_SEPARATOR_PATTERN = re.compile(r"[\n,，]+")
 
+logger = logging.getLogger(__name__)
+SEND_CODE_COMMAND: Final = "send-code"
+LOGIN_COMMAND: Final = "login"
+PID_COMMAND: Final = "pid"
+HELP_FLAGS: Final = frozenset({"-h", "--help"})
+SUPPORTED_COMMANDS: Final = frozenset(
+    {
+        SEND_CODE_COMMAND,
+        LOGIN_COMMAND,
+        PID_COMMAND,
+    }
+)
+EPISODE_URL_TEMPLATE: Final = "https://www.xiaoyuzhoufm.com/episode/{eid}"
+OUTPUT_STATUS_SUCCESS: Final = "success"
+OUTPUT_STATUS_ERROR: Final = "error"
+XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
+DEFAULT_EPISODE_ORDER: Final = "desc"
+SUCCESS_STATUS_TEXT: Final = "ok"
+
+
+class CliUsageError(ValueError):
+    """Raised when the command line arguments are invalid."""
+
+
+class _CliArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise CliUsageError(COMMAND_USAGE_TEXT)
+
+
+@dataclass(slots=True, frozen=True)
+class ExtractionRuntime:
+    llm_client: OpenAiCompatibleLlmClient
+    retry_config: LlmRetryConfig
+    company_blacklist: tuple[str, ...]
+
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(USAGE_TEXT, file=sys.stderr)
+    raw_args = sys.argv[1:]
+    _configure_logging()
+    if not raw_args:
+        print(COMMAND_USAGE_TEXT, file=sys.stderr)
         return 1
+    if raw_args[0] in HELP_FLAGS:
+        print(COMMAND_USAGE_TEXT)
+        return 0
 
-    episode_url = sys.argv[1]
     try:
-        _configure_logging()
-        llm_config = load_openai_compatible_config_from_env()
-        retry_config = load_llm_retry_config_from_env()
-        company_blacklist = _load_company_blacklist()
-        episode = parse_episode_url(episode_url)
-        llm_client = OpenAiCompatibleLlmClient(llm_config)
-        extraction_result = extract_companies_from_episode(
-            episode,
-            llm_client,
-            company_blacklist=company_blacklist,
-            retry_config=retry_config,
-        )
+        if raw_args[0] in SUPPORTED_COMMANDS:
+            return _run_command(raw_args)
+        if len(raw_args) != 1:
+            raise CliUsageError(COMMAND_USAGE_TEXT)
+        return _run_single_episode_mode(raw_args[0])
     except (
+        CliUsageError,
         CompanyExtractionError,
         EmptyLlmResponseError,
         EpisodeParseError,
         OpenAiCompatibleConfigError,
         OpenAiCompatibleLlmError,
+        XiaoyuzhouAuthStoreError,
+        XyzClientError,
         ValueError,
     ) as error:
         print(str(error), file=sys.stderr)
         return 1
-
-    print(
-        json.dumps(
-            extraction_result.to_dict(),
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    return 0
 
 
 def _configure_logging() -> None:
@@ -98,6 +152,266 @@ def _load_company_blacklist() -> tuple[str, ...]:
         )
         if company_name.strip()
     )
+
+
+def _run_command(raw_args: Sequence[str]) -> int:
+    parser = _build_command_parser()
+    parsed_args = parser.parse_args(list(raw_args))
+    xyz_client = XyzClient()
+    if parsed_args.command == SEND_CODE_COMMAND:
+        return _run_send_code_mode(parsed_args, xyz_client)
+    if parsed_args.command == LOGIN_COMMAND:
+        return _run_login_mode(parsed_args, xyz_client)
+    if parsed_args.command == PID_COMMAND:
+        return _run_pid_mode(parsed_args, xyz_client)
+    raise CliUsageError(COMMAND_USAGE_TEXT)
+
+
+def _build_command_parser() -> argparse.ArgumentParser:
+    parser = _CliArgumentParser(add_help=True, prog=PROGRAM_NAME)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    send_code_parser = subparsers.add_parser(SEND_CODE_COMMAND)
+    send_code_parser.add_argument("--mobile", required=True)
+    send_code_parser.add_argument("--area-code", default=DEFAULT_AREA_CODE)
+
+    login_parser = subparsers.add_parser(LOGIN_COMMAND)
+    login_parser.add_argument("--mobile", required=True)
+    login_parser.add_argument("--code", required=True)
+    login_parser.add_argument("--area-code", default=DEFAULT_AREA_CODE)
+
+    pid_parser = subparsers.add_parser(PID_COMMAND)
+    pid_parser.add_argument("--pid", required=True)
+    pid_parser.add_argument("--all", action="store_true", dest="fetch_all")
+    return parser
+
+
+def _run_send_code_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
+    xyz_client.send_code(
+        mobile_phone_number=parsed_args.mobile,
+        area_code=parsed_args.area_code,
+    )
+    _print_json(
+        {
+            "status": SUCCESS_STATUS_TEXT,
+            "mobile_phone_number": parsed_args.mobile,
+            "area_code": parsed_args.area_code,
+            "xyz_service_url": XYZ_SERVICE_URL_TEXT,
+        },
+        indent=2,
+    )
+    return 0
+
+
+def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
+    login_result = xyz_client.login(
+        mobile_phone_number=parsed_args.mobile,
+        verify_code=parsed_args.code,
+        area_code=parsed_args.area_code,
+    )
+    auth_session = build_auth_session(
+        mobile_phone_number=parsed_args.mobile,
+        area_code=parsed_args.area_code,
+        uid=login_result.uid,
+        access_token=login_result.access_token,
+        refresh_token=login_result.refresh_token,
+    )
+    save_auth_session(auth_session)
+    _print_json(
+        {
+            "status": SUCCESS_STATUS_TEXT,
+            "uid": login_result.uid,
+            "mobile_phone_number": parsed_args.mobile,
+            "area_code": parsed_args.area_code,
+            "xyz_service_url": XYZ_SERVICE_URL_TEXT,
+        },
+        indent=2,
+    )
+    return 0
+
+
+def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
+    auth_session = load_auth_session()
+    extraction_runtime = _load_extraction_runtime()
+    logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
+    episodes = _list_podcast_episodes(
+        xyz_client=xyz_client,
+        auth_session=auth_session,
+        pid=parsed_args.pid,
+        fetch_all=parsed_args.fetch_all,
+    )
+    logger.info("抓取到 %d 个节目", len(episodes))
+
+    has_failure = False
+    for episode_index, episode_summary in enumerate(episodes, start=1):
+        episode_url = _build_episode_url(episode_summary.eid)
+        logger.info(
+            "正在处理第 %d/%d 个节目：%s",
+            episode_index,
+            len(episodes),
+            episode_summary.title,
+        )
+        try:
+            extraction_result = _extract_companies_by_episode_url(
+                episode_url,
+                extraction_runtime,
+            )
+            logger.info(
+                "节目处理完成：提取到 %d 家公司，过滤 %d 家",
+                len(extraction_result.companies),
+                extraction_result.filtered_count,
+            )
+            _print_json(
+                {
+                    "status": OUTPUT_STATUS_SUCCESS,
+                    "pid": episode_summary.pid,
+                    "eid": episode_summary.eid,
+                    "title": episode_summary.title,
+                    "pub_date": episode_summary.pub_date,
+                    "episode_url": episode_url,
+                    "companies": [
+                        company.to_dict() for company in extraction_result.companies
+                    ],
+                    "filtered_count": extraction_result.filtered_count,
+                }
+            )
+        except (
+            CompanyExtractionError,
+            EmptyLlmResponseError,
+            EpisodeParseError,
+            OpenAiCompatibleConfigError,
+            OpenAiCompatibleLlmError,
+            ValueError,
+        ) as error:
+            has_failure = True
+            logger.info("节目处理失败：%s", error)
+            _print_json(
+                {
+                    "status": OUTPUT_STATUS_ERROR,
+                    "pid": episode_summary.pid,
+                    "eid": episode_summary.eid,
+                    "title": episode_summary.title,
+                    "pub_date": episode_summary.pub_date,
+                    "episode_url": episode_url,
+                    "error": str(error),
+                }
+            )
+    return 1 if has_failure else 0
+
+
+def _run_single_episode_mode(episode_url: str) -> int:
+    logger.info("处理单个节目：%s", episode_url)
+    extraction_runtime = _load_extraction_runtime()
+    extraction_result = _extract_companies_by_episode_url(
+        episode_url,
+        extraction_runtime,
+    )
+    _print_json(extraction_result.to_dict(), indent=2)
+    return 0
+
+
+def _load_extraction_runtime() -> ExtractionRuntime:
+    llm_config = load_openai_compatible_config_from_env()
+    retry_config = load_llm_retry_config_from_env()
+    company_blacklist = _load_company_blacklist()
+    llm_client = OpenAiCompatibleLlmClient(llm_config)
+    return ExtractionRuntime(
+        llm_client=llm_client,
+        retry_config=retry_config,
+        company_blacklist=company_blacklist,
+    )
+
+
+def _extract_companies_by_episode_url(
+    episode_url: str,
+    extraction_runtime: ExtractionRuntime,
+):
+    logger.info("抓取节目页面：%s", episode_url)
+    episode = parse_episode_url(episode_url)
+    return extract_companies_from_episode(
+        episode,
+        extraction_runtime.llm_client,
+        company_blacklist=extraction_runtime.company_blacklist,
+        retry_config=extraction_runtime.retry_config,
+    )
+
+
+def _list_podcast_episodes(
+    *,
+    xyz_client: XyzClient,
+    auth_session: XiaoyuzhouAuthSession,
+    pid: str,
+    fetch_all: bool,
+) -> tuple[PodcastEpisodeSummary, ...]:
+    episodes: list[PodcastEpisodeSummary] = []
+    current_load_more_key: EpisodeLoadMoreKey | None = None
+    current_auth_session = auth_session
+    while True:
+        page, current_auth_session = _fetch_episode_page_with_refresh(
+            xyz_client=xyz_client,
+            auth_session=current_auth_session,
+            pid=pid,
+            load_more_key=current_load_more_key,
+        )
+        episodes.extend(page.episodes)
+        if not fetch_all or page.load_more_key is None:
+            return tuple(episodes)
+        current_load_more_key = page.load_more_key
+
+
+def _fetch_episode_page_with_refresh(
+    *,
+    xyz_client: XyzClient,
+    auth_session: XiaoyuzhouAuthSession,
+    pid: str,
+    load_more_key: EpisodeLoadMoreKey | None,
+) -> tuple[EpisodeListPage, XiaoyuzhouAuthSession]:
+    try:
+        page = xyz_client.list_podcast_episodes(
+            pid=pid,
+            access_token=auth_session.access_token,
+            load_more_key=load_more_key,
+            order=DEFAULT_EPISODE_ORDER,
+        )
+        return page, auth_session
+    except XyzUnauthorizedError:
+        refreshed_session = _refresh_auth_session(
+            xyz_client=xyz_client,
+            auth_session=auth_session,
+        )
+        page = xyz_client.list_podcast_episodes(
+            pid=pid,
+            access_token=refreshed_session.access_token,
+            load_more_key=load_more_key,
+            order=DEFAULT_EPISODE_ORDER,
+        )
+        return page, refreshed_session
+
+
+def _refresh_auth_session(
+    *,
+    xyz_client: XyzClient,
+    auth_session: XiaoyuzhouAuthSession,
+) -> XiaoyuzhouAuthSession:
+    refreshed_tokens = xyz_client.refresh_token(
+        access_token=auth_session.access_token,
+        refresh_token=auth_session.refresh_token,
+    )
+    refreshed_session = update_auth_session_tokens(
+        auth_session,
+        access_token=refreshed_tokens.access_token,
+        refresh_token=refreshed_tokens.refresh_token,
+    )
+    save_auth_session(refreshed_session)
+    return refreshed_session
+
+
+def _build_episode_url(eid: str) -> str:
+    return EPISODE_URL_TEMPLATE.format(eid=eid)
+
+
+def _print_json(payload: object, *, indent: int | None = None) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=indent))
 
 
 if __name__ == "__main__":
