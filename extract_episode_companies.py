@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from typing import Final
 
@@ -21,6 +22,8 @@ from openai_compatible_llm import (
 USAGE_TEXT: Final = "用法：python extract_episode_companies.py <episode_url>"
 LOG_LEVEL_ENV: Final = "LOG_LEVEL"
 DEFAULT_LOG_LEVEL_NAME: Final = "WARNING"
+COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"
+COMPANY_BLACKLIST_SEPARATOR_PATTERN = re.compile(r"[\n,，]+")
 
 
 def main() -> int:
@@ -33,11 +36,13 @@ def main() -> int:
         _configure_logging()
         llm_config = load_openai_compatible_config_from_env()
         retry_config = load_llm_retry_config_from_env()
+        company_blacklist = _load_company_blacklist()
         episode = parse_episode_url(episode_url)
         llm_client = OpenAiCompatibleLlmClient(llm_config)
         extraction_result = extract_companies_from_episode(
             episode,
             llm_client,
+            company_blacklist=company_blacklist,
             retry_config=retry_config,
         )
     except (
@@ -78,6 +83,21 @@ def _resolve_log_level() -> int:
     if not isinstance(resolved_log_level, int):
         return logging.WARNING
     return resolved_log_level
+
+
+def _load_company_blacklist() -> tuple[str, ...]:
+    raw_company_blacklist = os.getenv(COMPANY_BLACKLIST_ENV_NAME, "")
+    normalized_blacklist_text = raw_company_blacklist.strip()
+    if not normalized_blacklist_text:
+        return ()
+
+    return tuple(
+        company_name.strip()
+        for company_name in COMPANY_BLACKLIST_SEPARATOR_PATTERN.split(
+            normalized_blacklist_text
+        )
+        if company_name.strip()
+    )
 
 
 if __name__ == "__main__":

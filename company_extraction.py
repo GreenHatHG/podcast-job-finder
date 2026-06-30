@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Protocol
+from typing import Collection, Protocol
 
 from extract_xiaoyuzhou_episode import CommentInfo, EpisodeInfo
 from openai_compatible_llm import (
@@ -90,6 +90,7 @@ class CompanyMention:
 @dataclass(slots=True)
 class CompanyExtractionResult:
     companies: list[CompanyMention] = field(default_factory=list)
+    filtered_count: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -120,7 +121,10 @@ def build_company_extraction_prompt(episode_text: str) -> str:
     return PROMPT_TEMPLATE.format(episode_text=episode_text)
 
 
-def parse_company_extraction_output(response_text: str) -> CompanyExtractionResult:
+def parse_company_extraction_output(
+    response_text: str,
+    company_blacklist: Collection[str] | None = None,
+) -> CompanyExtractionResult:
     normalized_response_text = _strip_json_code_block(response_text).strip()
     try:
         payload = json.loads(normalized_response_text)
@@ -134,25 +138,40 @@ def parse_company_extraction_output(response_text: str) -> CompanyExtractionResu
     if not isinstance(companies_data, list):
         raise CompanyExtractionError(INVALID_COMPANIES_FIELD_ERROR)
 
+    normalized_company_blacklist = _normalize_company_blacklist(company_blacklist)
     seen_company_names: set[str] = set()
     companies: list[CompanyMention] = []
+    filtered_count = 0
     for company_data in companies_data:
         company = _parse_company_item(company_data)
         if company is None:
             continue
 
-        normalized_name = company.name.strip()
+        normalized_name = _normalize_company_name(company.name)
         if normalized_name in seen_company_names:
             continue
 
         seen_company_names.add(normalized_name)
+        if normalized_name in normalized_company_blacklist:
+            filtered_count += 1
+            logger.debug(
+                "公司命中黑名单，已过滤：name=%s evidence=%s",
+                company.name,
+                company.evidence,
+            )
+            continue
+
         companies.append(company)
-    return CompanyExtractionResult(companies=companies)
+    return CompanyExtractionResult(
+        companies=companies,
+        filtered_count=filtered_count,
+    )
 
 
 def extract_companies_from_episode(
     episode: EpisodeInfo,
     llm_client: LlmClientProtocol,
+    company_blacklist: Collection[str] | None = None,
     retry_config: LlmRetryConfig | None = None,
 ) -> CompanyExtractionResult:
     episode_text = build_company_extraction_input(episode)
@@ -163,7 +182,10 @@ def extract_companies_from_episode(
     for attempt in range(1, effective_retry_config.max_attempts + 1):
         try:
             response_text = llm_client.generate(prompt)
-            extraction_result = parse_company_extraction_output(response_text)
+            extraction_result = parse_company_extraction_output(
+                response_text,
+                company_blacklist=company_blacklist,
+            )
             if attempt > 1:
                 logger.debug("LLM 第 %s 次尝试成功。", attempt)
             return extraction_result
@@ -238,6 +260,23 @@ def _parse_company_item(company_data: object) -> CompanyMention:
         raise CompanyExtractionError(EMPTY_COMPANY_FIELD_ERROR)
 
     return CompanyMention(name=name, evidence=evidence)
+
+
+def _normalize_company_blacklist(
+    company_blacklist: Collection[str] | None,
+) -> frozenset[str]:
+    if not company_blacklist:
+        return frozenset()
+
+    return frozenset(
+        _normalize_company_name(company_name)
+        for company_name in company_blacklist
+        if company_name.strip()
+    )
+
+
+def _normalize_company_name(company_name: str) -> str:
+    return company_name.strip().casefold()
 
 
 def _strip_json_code_block(response_text: str) -> str:
