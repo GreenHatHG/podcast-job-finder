@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Final, Sequence
 
 from company_extraction import CompanyExtractionError, extract_companies_from_episode
@@ -66,6 +67,7 @@ SUPPORTED_COMMANDS: Final = frozenset(
     }
 )
 EPISODE_URL_TEMPLATE: Final = "https://www.xiaoyuzhoufm.com/episode/{eid}"
+OUTPUT_FILE_TEMPLATE: Final = "result_{pid}_{timestamp}.json"
 OUTPUT_STATUS_SUCCESS: Final = "success"
 OUTPUT_STATUS_ERROR: Final = "error"
 XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
@@ -87,6 +89,8 @@ class ExtractionRuntime:
     llm_client: OpenAiCompatibleLlmClient
     retry_config: LlmRetryConfig
     company_blacklist: tuple[str, ...]
+    model: str
+    base_url: str | None
 
 
 def main() -> int:
@@ -242,7 +246,9 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
     )
     logger.info("抓取到 %d 个节目", len(episodes))
 
-    has_failure = False
+    episode_results: list[dict] = []
+    success_count = 0
+    fail_count = 0
     for episode_index, episode_summary in enumerate(episodes, start=1):
         episode_url = _build_episode_url(episode_summary.eid)
         logger.info(
@@ -261,10 +267,9 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
                 len(extraction_result.companies),
                 extraction_result.filtered_count,
             )
-            _print_json(
+            episode_results.append(
                 {
                     "status": OUTPUT_STATUS_SUCCESS,
-                    "pid": episode_summary.pid,
                     "eid": episode_summary.eid,
                     "title": episode_summary.title,
                     "pub_date": episode_summary.pub_date,
@@ -275,6 +280,7 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
                     "filtered_count": extraction_result.filtered_count,
                 }
             )
+            success_count += 1
         except (
             CompanyExtractionError,
             EmptyLlmResponseError,
@@ -283,12 +289,10 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
             OpenAiCompatibleLlmError,
             ValueError,
         ) as error:
-            has_failure = True
             logger.info("节目处理失败：%s", error)
-            _print_json(
+            episode_results.append(
                 {
                     "status": OUTPUT_STATUS_ERROR,
-                    "pid": episode_summary.pid,
                     "eid": episode_summary.eid,
                     "title": episode_summary.title,
                     "pub_date": episode_summary.pub_date,
@@ -296,7 +300,19 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
                     "error": str(error),
                 }
             )
-    return 1 if has_failure else 0
+            fail_count += 1
+
+    output_path = _save_result_file(
+        pid=parsed_args.pid,
+        model=extraction_runtime.model,
+        base_url=extraction_runtime.base_url,
+        total=len(episodes),
+        success=success_count,
+        failed=fail_count,
+        episodes=episode_results,
+    )
+    logger.info("结果已保存到 %s", output_path)
+    return 1 if fail_count > 0 else 0
 
 
 def _run_single_episode_mode(episode_url: str) -> int:
@@ -319,6 +335,8 @@ def _load_extraction_runtime() -> ExtractionRuntime:
         llm_client=llm_client,
         retry_config=retry_config,
         company_blacklist=company_blacklist,
+        model=llm_config.model,
+        base_url=llm_config.base_url,
     )
 
 
@@ -408,6 +426,35 @@ def _refresh_auth_session(
 
 def _build_episode_url(eid: str) -> str:
     return EPISODE_URL_TEMPLATE.format(eid=eid)
+
+
+def _save_result_file(
+    *,
+    pid: str,
+    model: str,
+    base_url: str | None,
+    total: int,
+    success: int,
+    failed: int,
+    episodes: list[dict],
+) -> str:
+    now = datetime.now(tz=timezone.utc)
+    timestamp_label = now.strftime("%Y%m%d_%H%M%S")
+    output_path = OUTPUT_FILE_TEMPLATE.format(pid=pid, timestamp=timestamp_label)
+    report = {
+        "pid": pid,
+        "model": model,
+        "base_url": base_url,
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "episodes": episodes,
+    }
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return output_path
 
 
 def _print_json(payload: object, *, indent: int | None = None) -> None:
