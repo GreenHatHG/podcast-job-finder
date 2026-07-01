@@ -67,7 +67,9 @@ SUPPORTED_COMMANDS: Final = frozenset(
     }
 )
 EPISODE_URL_TEMPLATE: Final = "https://www.xiaoyuzhoufm.com/episode/{eid}"
+OUTPUT_DIR: Final = "output"
 OUTPUT_FILE_TEMPLATE: Final = "result_{pid}_{timestamp}.json"
+SUMMARY_FILE_TEMPLATE: Final = "summary_{pid}_{timestamp}.json"
 OUTPUT_STATUS_SUCCESS: Final = "success"
 OUTPUT_STATUS_ERROR: Final = "error"
 XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
@@ -312,6 +314,16 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         episodes=episode_results,
     )
     logger.info("结果已保存到 %s", output_path)
+    summary_path = _save_summary_file(
+        pid=parsed_args.pid,
+        model=extraction_runtime.model,
+        base_url=extraction_runtime.base_url,
+        total=len(episodes),
+        success=success_count,
+        failed=fail_count,
+        episodes=episode_results,
+    )
+    logger.info("公司汇总已保存到 %s", summary_path)
     return 1 if fail_count > 0 else 0
 
 
@@ -428,6 +440,75 @@ def _build_episode_url(eid: str) -> str:
     return EPISODE_URL_TEMPLATE.format(eid=eid)
 
 
+def _build_output_path(template: str, pid: str, timestamp_label: str) -> str:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return os.path.join(
+        OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label)
+    )
+
+
+def _save_summary_file(
+    *,
+    pid: str,
+    model: str,
+    base_url: str | None,
+    total: int,
+    success: int,
+    failed: int,
+    episodes: list[dict],
+) -> str:
+    now = datetime.now(tz=timezone.utc)
+    timestamp_label = now.strftime("%Y%m%d_%H%M%S")
+    output_path = _build_output_path(SUMMARY_FILE_TEMPLATE, pid, timestamp_label)
+    companies = _aggregate_companies(episodes)
+    report = {
+        "pid": pid,
+        "model": model,
+        "base_url": base_url,
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_episodes": total,
+        "success_episodes": success,
+        "failed_episodes": failed,
+        "unique_company_count": len(companies),
+        "companies": companies,
+    }
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return output_path
+
+
+def _aggregate_companies(episodes: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for episode in episodes:
+        if episode.get("status") != OUTPUT_STATUS_SUCCESS:
+            continue
+        episode_ref = {
+            "eid": episode.get("eid"),
+            "title": episode.get("title"),
+            "pub_date": episode.get("pub_date"),
+            "episode_url": episode.get("episode_url"),
+        }
+        for company in episode.get("companies", ()):
+            raw_name = company.get("name", "")
+            normalized_name = raw_name.strip()
+            if not normalized_name:
+                continue
+            entry = grouped.setdefault(
+                normalized_name,
+                {"name": normalized_name, "occurrence_count": 0, "episodes": []},
+            )
+            entry["occurrence_count"] += 1
+            entry["episodes"].append(
+                {**episode_ref, "evidence": company.get("evidence", "")}
+            )
+
+    return sorted(
+        grouped.values(),
+        key=lambda item: (-item["occurrence_count"], item["name"]),
+    )
+
+
 def _save_result_file(
     *,
     pid: str,
@@ -440,7 +521,7 @@ def _save_result_file(
 ) -> str:
     now = datetime.now(tz=timezone.utc)
     timestamp_label = now.strftime("%Y%m%d_%H%M%S")
-    output_path = OUTPUT_FILE_TEMPLATE.format(pid=pid, timestamp=timestamp_label)
+    output_path = _build_output_path(OUTPUT_FILE_TEMPLATE, pid, timestamp_label)
     report = {
         "pid": pid,
         "model": model,
