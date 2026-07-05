@@ -57,18 +57,14 @@ def build_auth_session(
 def load_auth_session() -> XiaoyuzhouAuthSession:
     if not AUTH_SESSION_PATH.exists():
         raise XiaoyuzhouAuthStoreError(
-            AUTH_SESSION_MISSING_ERROR_TEMPLATE.format(
-                file_name=AUTH_SESSION_FILE_NAME
-            )
+            AUTH_SESSION_MISSING_ERROR_TEMPLATE.format(file_name=AUTH_SESSION_FILE_NAME)
         )
 
     try:
         payload = json.loads(AUTH_SESSION_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise XiaoyuzhouAuthStoreError(
-            AUTH_SESSION_INVALID_ERROR_TEMPLATE.format(
-                file_name=AUTH_SESSION_FILE_NAME
-            )
+            AUTH_SESSION_INVALID_ERROR_TEMPLATE.format(file_name=AUTH_SESSION_FILE_NAME)
         ) from error
 
     if not isinstance(payload, dict):

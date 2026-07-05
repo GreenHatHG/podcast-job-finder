@@ -39,7 +39,9 @@ MISSING_ENV_ERROR_TEMPLATE: Final = "缺少环境变量：{env_name}"
 INVALID_API_STYLE_ERROR_TEMPLATE: Final = (
     "环境变量 OPENAI_API_STYLE 仅支持以下取值：responses, chat.completions。"
 )
-INVALID_INTEGER_ENV_TEMPLATE: Final = "环境变量 {env_name} 必须是大于等于 {minimum} 的整数。"
+INVALID_INTEGER_ENV_TEMPLATE: Final = (
+    "环境变量 {env_name} 必须是大于等于 {minimum} 的整数。"
+)
 INVALID_FLOAT_ENV_TEMPLATE: Final = "环境变量 {env_name} 必须是大于 {minimum} 的数字。"
 INVALID_MAX_DELAY_ERROR: Final = (
     "环境变量 OPENAI_RETRY_MAX_DELAY_SECONDS 必须大于等于 "

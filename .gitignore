@@ -5,3 +5,4 @@ __pycache__/
 result_*.json
 summary*.json
 output
+xyz-*
