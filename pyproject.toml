@@ -6,3 +6,22 @@ dependencies = [
     "openai>=2.15.0",
     "requests>=2.34.2",
 ]
+
+[dependency-groups]
+dev = [
+  "pre-commit>=3.0.0"
+]
+
+[tool.vulture]
+paths = [
+  "company_extraction.py",
+  "episode_company_runner.py",
+  "extract_episode_companies.py",
+  "extract_xiaoyuzhou_episode.py",
+  "http_user_agents.py",
+  "llm_checkpoint_store.py",
+  "openai_compatible_llm.py",
+  "xiaoyuzhou_auth_store.py",
+  "xiaoyuzhou_xyz_client.py",
+]
+ignore_names = ["encoding", "handle_data", "handle_starttag", "handle_endtag"]

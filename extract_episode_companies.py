@@ -6,15 +6,20 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Final, Sequence
+from typing import Final, NoReturn, Sequence
 
-from company_extraction import CompanyExtractionError, extract_companies_from_episode
-from extract_xiaoyuzhou_episode import EpisodeParseError, parse_episode_url
+from company_extraction import CompanyExtractionError
+from episode_company_runner import (
+    EpisodeExtractionRuntime,
+    EpisodeWorkItem,
+    build_runtime_signature,
+    run_episode_company_extraction,
+)
+from extract_xiaoyuzhou_episode import EpisodeParseError
+from llm_checkpoint_store import LlmCheckpointStore
 from openai_compatible_llm import (
     EmptyLlmResponseError,
-    LlmRetryConfig,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmClient,
     OpenAiCompatibleLlmError,
@@ -33,6 +38,7 @@ from xiaoyuzhou_xyz_client import (
     DEFAULT_AREA_CODE,
     DEFAULT_XYZ_BASE_URL,
     EpisodeLoadMoreKey,
+    EpisodeListPage,
     PodcastEpisodeSummary,
     XyzClient,
     XyzClientError,
@@ -82,17 +88,8 @@ class CliUsageError(ValueError):
 
 
 class _CliArgumentParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         raise CliUsageError(COMMAND_USAGE_TEXT)
-
-
-@dataclass(slots=True, frozen=True)
-class ExtractionRuntime:
-    llm_client: OpenAiCompatibleLlmClient
-    retry_config: LlmRetryConfig
-    company_blacklist: tuple[str, ...]
-    model: str
-    base_url: str | None
 
 
 def main() -> int:
@@ -239,6 +236,7 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
 def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
     auth_session = load_auth_session()
     extraction_runtime = _load_extraction_runtime()
+    checkpoint_store = LlmCheckpointStore()
     logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
     episodes = _list_podcast_episodes(
         xyz_client=xyz_client,
@@ -253,6 +251,12 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
     fail_count = 0
     for episode_index, episode_summary in enumerate(episodes, start=1):
         episode_url = _build_episode_url(episode_summary.eid)
+        work_item = EpisodeWorkItem(
+            episode_url=episode_url,
+            eid=episode_summary.eid,
+            title=episode_summary.title,
+            pub_date=episode_summary.pub_date,
+        )
         logger.info(
             "正在处理第 %d/%d 个节目：%s",
             episode_index,
@@ -260,28 +264,17 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
             episode_summary.title,
         )
         try:
-            extraction_result = _extract_companies_by_episode_url(
-                episode_url,
-                extraction_runtime,
+            extraction_outcome = run_episode_company_extraction(
+                work_item=work_item,
+                runtime=extraction_runtime,
+                checkpoint_store=checkpoint_store,
             )
             logger.info(
                 "节目处理完成：提取到 %d 家公司，过滤 %d 家",
-                len(extraction_result.companies),
-                extraction_result.filtered_count,
+                len(extraction_outcome.extraction_result.companies),
+                extraction_outcome.extraction_result.filtered_count,
             )
-            episode_results.append(
-                {
-                    "status": OUTPUT_STATUS_SUCCESS,
-                    "eid": episode_summary.eid,
-                    "title": episode_summary.title,
-                    "pub_date": episode_summary.pub_date,
-                    "episode_url": episode_url,
-                    "companies": [
-                        company.to_dict() for company in extraction_result.companies
-                    ],
-                    "filtered_count": extraction_result.filtered_count,
-                }
-            )
+            episode_results.append(extraction_outcome.to_pid_result_record())
             success_count += 1
         except (
             CompanyExtractionError,
@@ -330,39 +323,33 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
 def _run_single_episode_mode(episode_url: str) -> int:
     logger.info("处理单个节目：%s", episode_url)
     extraction_runtime = _load_extraction_runtime()
-    extraction_result = _extract_companies_by_episode_url(
-        episode_url,
-        extraction_runtime,
+    extraction_outcome = run_episode_company_extraction(
+        work_item=EpisodeWorkItem(episode_url=episode_url),
+        runtime=extraction_runtime,
+        checkpoint_store=LlmCheckpointStore(),
     )
-    _print_json(extraction_result.to_dict(), indent=2)
+    _print_json(extraction_outcome.extraction_result.to_dict(), indent=2)
     return 0
 
 
-def _load_extraction_runtime() -> ExtractionRuntime:
+def _load_extraction_runtime() -> EpisodeExtractionRuntime:
     llm_config = load_openai_compatible_config_from_env()
     retry_config = load_llm_retry_config_from_env()
     company_blacklist = _load_company_blacklist()
     llm_client = OpenAiCompatibleLlmClient(llm_config)
-    return ExtractionRuntime(
+    return EpisodeExtractionRuntime(
         llm_client=llm_client,
         retry_config=retry_config,
         company_blacklist=company_blacklist,
         model=llm_config.model,
         base_url=llm_config.base_url,
-    )
-
-
-def _extract_companies_by_episode_url(
-    episode_url: str,
-    extraction_runtime: ExtractionRuntime,
-):
-    logger.info("抓取节目页面：%s", episode_url)
-    episode = parse_episode_url(episode_url)
-    return extract_companies_from_episode(
-        episode,
-        extraction_runtime.llm_client,
-        company_blacklist=extraction_runtime.company_blacklist,
-        retry_config=extraction_runtime.retry_config,
+        api_style=llm_config.api_style,
+        runtime_signature=build_runtime_signature(
+            model=llm_config.model,
+            base_url=llm_config.base_url,
+            api_style=llm_config.api_style,
+            company_blacklist=company_blacklist,
+        ),
     )
 
 
@@ -442,9 +429,7 @@ def _build_episode_url(eid: str) -> str:
 
 def _build_output_path(template: str, pid: str, timestamp_label: str) -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    return os.path.join(
-        OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label)
-    )
+    return os.path.join(OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label))
 
 
 def _save_summary_file(

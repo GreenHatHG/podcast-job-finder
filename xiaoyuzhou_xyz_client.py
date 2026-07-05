@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 import requests
 
@@ -27,8 +27,12 @@ REQUEST_FAILED_ERROR_TEMPLATE: Final = "请求 xyz 服务失败：{error_message
 HTTP_REQUEST_FAILED_TEMPLATE: Final = (
     "调用 xyz 接口失败：{path}，HTTP {status_code}，{detail}"
 )
-INVALID_JSON_DETAIL_TEMPLATE: Final = "响应体不是合法 JSON，HTTP {status_code}，body={body}"
-UNEXPECTED_FIELD_DETAIL_TEMPLATE: Final = "字段 {field_name} 需要 {expected_description}，实际值 {actual_value}"
+INVALID_JSON_DETAIL_TEMPLATE: Final = (
+    "响应体不是合法 JSON，HTTP {status_code}，body={body}"
+)
+UNEXPECTED_FIELD_DETAIL_TEMPLATE: Final = (
+    "字段 {field_name} 需要 {expected_description}，实际值 {actual_value}"
+)
 DEBUG_REQUEST_TEMPLATE: Final = "xyz 请求 path=%s payload=%s"
 DEBUG_RESPONSE_TEMPLATE: Final = "xyz 响应 path=%s status=%s body=%s"
 DEBUG_PARSE_FAILURE_TEMPLATE: Final = (
@@ -99,7 +103,9 @@ class XyzClient:
     def __init__(self, base_url: str = DEFAULT_XYZ_BASE_URL) -> None:
         self._base_url = base_url.rstrip("/")
         self._session = requests.Session()
-        self._session.headers.update({USER_AGENT_HEADER_NAME: DEFAULT_BROWSER_USER_AGENT})
+        self._session.headers.update(
+            {USER_AGENT_HEADER_NAME: DEFAULT_BROWSER_USER_AGENT}
+        )
 
     def send_code(
         self,
@@ -317,14 +323,6 @@ class XyzClient:
         payload = response_data.get("data")
         return self._require_dict(payload, path, field_name="data")
 
-    def _extract_upstream_payload(
-        self,
-        response_data: dict[str, Any],
-        path: str,
-    ) -> dict[str, Any]:
-        local_payload = self._extract_local_payload(response_data, path)
-        return self._require_dict(local_payload.get("data"), path, field_name="data.data")
-
     def _parse_episode_summary(
         self,
         *,
@@ -448,7 +446,7 @@ class XyzClient:
         field_name: str,
         expected_description: str,
         payload: object,
-    ) -> None:
+    ) -> NoReturn:
         detail = UNEXPECTED_FIELD_DETAIL_TEMPLATE.format(
             field_name=field_name,
             expected_description=expected_description,
@@ -468,7 +466,7 @@ class XyzClient:
         path: str,
         detail: str,
         cause: Exception | None = None,
-    ) -> None:
+    ) -> NoReturn:
         error = XyzClientError(
             UNEXPECTED_RESPONSE_ERROR_TEMPLATE.format(path=path, detail=detail)
         )

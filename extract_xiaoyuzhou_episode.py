@@ -6,6 +6,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from html import unescape
 from html.parser import HTMLParser
+from urllib.parse import urlparse
 
 import requests
 
@@ -30,10 +31,10 @@ REQUEST_TIMEOUT_SECONDS = 30
 REQUEST_USER_AGENT = DEFAULT_BROWSER_USER_AGENT
 FETCH_URL_ERROR_TEMPLATE = "请求页面失败：{url}"
 INVALID_URL_ERROR_TEMPLATE = "URL 无效：{url}"
-DEBUG_LOG_PREFIX = "[debug]"
 DEBUG_URL_TEMPLATE = "[debug] url={url}"
 DEBUG_EXCEPTION_TEMPLATE = "[debug] exception={exception_type}: {exception_message}"
 DEBUG_HTTP_STATUS_TEMPLATE = "[debug] http_status={status_code}"
+EPISODE_PATH_PREFIX = "/episode/"
 
 
 class EpisodeParseError(ValueError):
@@ -48,7 +49,7 @@ class _HTMLTextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         self._parts.append(data)
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"br", "p", "div", "li", "ul", "ol", "section", "h1", "h2", "h3"}:
             self._parts.append("\n")
 
@@ -128,6 +129,21 @@ def parse_episode_html(html_text: str) -> EpisodeInfo:
 
 def parse_episode_url(episode_url: str) -> EpisodeInfo:
     return parse_episode_html(fetch_episode_html(episode_url))
+
+
+def extract_episode_id_from_url(episode_url: str) -> str | None:
+    if not episode_url.startswith(("http://", "https://")):
+        return None
+
+    parsed_url = urlparse(episode_url)
+    normalized_path = parsed_url.path.rstrip("/")
+    if not normalized_path.startswith(EPISODE_PATH_PREFIX):
+        return None
+
+    episode_id = normalized_path.removeprefix(EPISODE_PATH_PREFIX).strip()
+    if not episode_id or "/" in episode_id:
+        return None
+    return episode_id
 
 
 def fetch_episode_html(episode_url: str) -> str:

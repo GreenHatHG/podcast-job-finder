@@ -86,6 +86,12 @@ class CompanyMention:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, payload: object) -> "CompanyMention":
+        if not isinstance(payload, dict):
+            raise ValueError(INVALID_COMPANY_ITEM_ERROR)
+        return _parse_company_item(payload)
+
 
 @dataclass(slots=True)
 class CompanyExtractionResult:
@@ -94,6 +100,34 @@ class CompanyExtractionResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "CompanyExtractionResult":
+        if not isinstance(payload, dict):
+            raise ValueError(INVALID_TOP_LEVEL_ERROR)
+
+        companies_data = payload.get(COMPANIES_FIELD, [])
+        if not isinstance(companies_data, list):
+            raise ValueError(INVALID_COMPANIES_FIELD_ERROR)
+
+        filtered_count = payload.get("filtered_count", 0)
+        if not isinstance(filtered_count, int):
+            raise ValueError("filtered_count 必须是整数。")
+
+        return cls(
+            companies=[
+                CompanyMention.from_dict(company_data)
+                for company_data in companies_data
+            ],
+            filtered_count=filtered_count,
+        )
+
+
+@dataclass(slots=True)
+class CompanyExtractionAttempt:
+    response_text: str | None = None
+    extraction_result: CompanyExtractionResult | None = None
+    error: Exception | None = None
 
 
 def build_company_extraction_input(episode: EpisodeInfo) -> str:
@@ -119,6 +153,10 @@ def build_company_extraction_input(episode: EpisodeInfo) -> str:
 
 def build_company_extraction_prompt(episode_text: str) -> str:
     return PROMPT_TEMPLATE.format(episode_text=episode_text)
+
+
+def get_company_extraction_prompt_template() -> str:
+    return PROMPT_TEMPLATE
 
 
 def parse_company_extraction_output(
@@ -168,17 +206,16 @@ def parse_company_extraction_output(
     )
 
 
-def extract_companies_from_episode(
-    episode: EpisodeInfo,
+def run_company_extraction_from_prompt(
+    prompt: str,
     llm_client: LlmClientProtocol,
     company_blacklist: Collection[str] | None = None,
     retry_config: LlmRetryConfig | None = None,
-) -> CompanyExtractionResult:
-    episode_text = build_company_extraction_input(episode)
-    prompt = build_company_extraction_prompt(episode_text)
+) -> CompanyExtractionAttempt:
     effective_retry_config = retry_config or LlmRetryConfig()
     last_error: Exception | None = None
     last_failure_category = INVALID_RESULT_CATEGORY
+    last_response_text: str | None = None
     for attempt in range(1, effective_retry_config.max_attempts + 1):
         try:
             if attempt == 1:
@@ -186,6 +223,7 @@ def extract_companies_from_episode(
             else:
                 logger.info("LLM 重试中...（第 %d 次）", attempt)
             response_text = llm_client.generate(prompt)
+            last_response_text = response_text
             extraction_result = parse_company_extraction_output(
                 response_text,
                 company_blacklist=company_blacklist,
@@ -198,17 +236,26 @@ def extract_companies_from_episode(
             )
             if attempt > 1:
                 logger.debug("LLM 第 %s 次尝试成功。", attempt)
-            return extraction_result
+            return CompanyExtractionAttempt(
+                response_text=response_text,
+                extraction_result=extraction_result,
+            )
         except RetryableOpenAiCompatibleLlmError as error:
             last_error = error
             last_failure_category = REQUEST_FAILURE_CATEGORY
+            last_response_text = None
         except (EmptyLlmResponseError, CompanyExtractionError) as error:
             last_error = error
             last_failure_category = INVALID_RESULT_CATEGORY
-        except OpenAiCompatibleLlmError:
+            if isinstance(error, EmptyLlmResponseError):
+                last_response_text = None
+        except OpenAiCompatibleLlmError as error:
             # Deterministic request failures such as auth, model, or parameter issues
             # should fail fast because repeating the same request will not recover.
-            raise
+            return CompanyExtractionAttempt(
+                response_text=None,
+                error=error,
+            )
 
         if attempt == effective_retry_config.max_attempts:
             break
@@ -227,13 +274,19 @@ def extract_companies_from_episode(
         time.sleep(delay_seconds)
 
     if last_error is None:
-        raise CompanyExtractionError(INVALID_RESPONSE_ERROR)
+        return CompanyExtractionAttempt(
+            response_text=last_response_text,
+            error=CompanyExtractionError(INVALID_RESPONSE_ERROR),
+        )
 
-    raise _build_retry_exhausted_error(
-        max_attempts=effective_retry_config.max_attempts,
-        failure_category=last_failure_category,
-        last_error=last_error,
-    ) from last_error
+    return CompanyExtractionAttempt(
+        response_text=last_response_text,
+        error=_build_retry_exhausted_error(
+            max_attempts=effective_retry_config.max_attempts,
+            failure_category=last_failure_category,
+            last_error=last_error,
+        ),
+    )
 
 
 def _comment_to_input_lines(
