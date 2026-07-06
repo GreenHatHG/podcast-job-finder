@@ -9,19 +9,43 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "pre-commit>=3.0.0"
+  "mypy>=2.1.0",
+  "pre-commit>=3.0.0",
+  "pylint>=4.0.6",
+  "pyright>=1.1.411",
 ]
 
-[tool.vulture]
-paths = [
-  "company_extraction.py",
-  "episode_company_runner.py",
-  "extract_episode_companies.py",
-  "extract_xiaoyuzhou_episode.py",
-  "http_user_agents.py",
-  "llm_checkpoint_store.py",
-  "openai_compatible_llm.py",
-  "xiaoyuzhou_auth_store.py",
-  "xiaoyuzhou_xyz_client.py",
+[tool.mypy]
+python_version = "3.14"
+files = ["."]
+warn_unreachable = true
+exclude = '(^\.venv/|^output/|^\.git/|^\.mypy_cache/|^\.ruff_cache/)'
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+  "C90",
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  "SIM",
 ]
-ignore_names = ["encoding", "handle_data", "handle_starttag", "handle_endtag"]
+ignore = [
+  "SIM105",
+  "SIM108",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.vulture]
+paths = ["."]
+exclude = [
+  "*/.venv/*",
+  "*/output/*",
+]
+min_confidence = 80
+sort_by_size = true

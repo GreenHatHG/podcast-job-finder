@@ -1,4 +1,6 @@
 .venv/
+.npm-cache/
+.tmp/
 __pycache__/
 .env
 .xiaoyuzhou_auth.json

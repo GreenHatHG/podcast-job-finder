@@ -1,0 +1,14 @@
+{
+  "include": ["."],
+  "exclude": [
+    ".venv",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    "output",
+    "**/__pycache__"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14"
+}

@@ -1,0 +1,18 @@
+{
+  "minTokens": 20,
+  "minLines": 6,
+  "format": [
+    "python"
+  ],
+  "ignore": [
+    ".venv/**",
+    ".git/**",
+    "output/**",
+    ".tmp/**",
+    ".npm-cache/**"
+  ],
+  "reporters": [
+    "console-full"
+  ],
+  "pattern": "*.py"
+}
