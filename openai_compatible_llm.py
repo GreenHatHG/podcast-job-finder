@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from typing import Final
+from typing import Callable, Final, TypeVar
 
 from openai import (
     APIConnectionError,
@@ -50,6 +50,7 @@ INVALID_MAX_DELAY_ERROR: Final = (
 EMPTY_RESPONSE_TEXT_ERROR: Final = "LLM 返回了空文本。"
 LLM_REQUEST_ERROR_TEMPLATE: Final = "LLM 调用失败：{error_message}"
 USER_ROLE: Final = "user"
+_NumericT = TypeVar("_NumericT", int, float)
 
 
 class OpenAiCompatibleConfigError(ValueError):
@@ -188,19 +189,13 @@ def _get_required_env(env_name: str) -> str:
 
 
 def _get_integer_env(env_name: str, default_value: int, minimum: int) -> int:
-    raw_value = _normalize_optional_env_value(os.getenv(env_name))
-    if raw_value is None:
-        return default_value
-
-    try:
-        parsed_value = int(raw_value)
-    except ValueError as error:
-        raise OpenAiCompatibleConfigError(
-            INVALID_INTEGER_ENV_TEMPLATE.format(
-                env_name=env_name,
-                minimum=minimum,
-            )
-        ) from error
+    parsed_value = _parse_optional_env_number(
+        env_name=env_name,
+        default_value=default_value,
+        parser=int,
+        error_template=INVALID_INTEGER_ENV_TEMPLATE,
+        minimum=minimum,
+    )
 
     if parsed_value < minimum:
         raise OpenAiCompatibleConfigError(
@@ -213,19 +208,13 @@ def _get_integer_env(env_name: str, default_value: int, minimum: int) -> int:
 
 
 def _get_float_env(env_name: str, default_value: float, minimum: float) -> float:
-    raw_value = _normalize_optional_env_value(os.getenv(env_name))
-    if raw_value is None:
-        return default_value
-
-    try:
-        parsed_value = float(raw_value)
-    except ValueError as error:
-        raise OpenAiCompatibleConfigError(
-            INVALID_FLOAT_ENV_TEMPLATE.format(
-                env_name=env_name,
-                minimum=minimum,
-            )
-        ) from error
+    parsed_value = _parse_optional_env_number(
+        env_name=env_name,
+        default_value=default_value,
+        parser=float,
+        error_template=INVALID_FLOAT_ENV_TEMPLATE,
+        minimum=minimum,
+    )
 
     if not math.isfinite(parsed_value) or parsed_value <= minimum:
         raise OpenAiCompatibleConfigError(
@@ -235,6 +224,29 @@ def _get_float_env(env_name: str, default_value: float, minimum: float) -> float
             )
         )
     return parsed_value
+
+
+def _parse_optional_env_number(
+    *,
+    env_name: str,
+    default_value: _NumericT,
+    parser: Callable[[str], _NumericT],
+    error_template: str,
+    minimum: int | float,
+) -> _NumericT:
+    raw_value = _normalize_optional_env_value(os.getenv(env_name))
+    if raw_value is None:
+        return default_value
+
+    try:
+        return parser(raw_value)
+    except ValueError as error:
+        raise OpenAiCompatibleConfigError(
+            error_template.format(
+                env_name=env_name,
+                minimum=minimum,
+            )
+        ) from error
 
 
 def _normalize_optional_env_value(value: str | None) -> str | None:

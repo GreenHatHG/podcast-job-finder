@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from http import HTTPStatus
 import json
 import logging
 from typing import Any, Final, NoReturn
@@ -259,21 +260,19 @@ class XyzClient:
             ) from error
 
         response_data = self._parse_response_json(response, path)
-        if response.status_code == requests.codes.unauthorized:
-            raise XyzUnauthorizedError(
-                HTTP_REQUEST_FAILED_TEMPLATE.format(
-                    path=path,
-                    status_code=response.status_code,
-                    detail=self._extract_error_detail(response_data),
-                )
+        if response.status_code == HTTPStatus.UNAUTHORIZED:
+            self._raise_http_request_error(
+                path=path,
+                status_code=response.status_code,
+                response_data=response_data,
+                error_type=XyzUnauthorizedError,
             )
-        if response.status_code >= requests.codes.bad_request:
-            raise XyzClientError(
-                HTTP_REQUEST_FAILED_TEMPLATE.format(
-                    path=path,
-                    status_code=response.status_code,
-                    detail=self._extract_error_detail(response_data),
-                )
+        if response.status_code >= HTTPStatus.BAD_REQUEST:
+            self._raise_http_request_error(
+                path=path,
+                status_code=response.status_code,
+                response_data=response_data,
+                error_type=XyzClientError,
             )
 
         return response_data
@@ -421,15 +420,7 @@ class XyzClient:
         *,
         field_name: str = "value",
     ) -> str:
-        if not isinstance(value, str):
-            self._raise_unexpected_response(
-                path=path,
-                field_name=field_name,
-                expected_description="非空字符串",
-                payload=value,
-            )
-
-        normalized_value = value.strip()
+        normalized_value = value.strip() if isinstance(value, str) else ""
         if not normalized_value:
             self._raise_unexpected_response(
                 path=path,
@@ -438,6 +429,22 @@ class XyzClient:
                 payload=value,
             )
         return normalized_value
+
+    def _raise_http_request_error(
+        self,
+        *,
+        path: str,
+        status_code: int,
+        response_data: dict[str, Any],
+        error_type: type[XyzClientError],
+    ) -> NoReturn:
+        raise error_type(
+            HTTP_REQUEST_FAILED_TEMPLATE.format(
+                path=path,
+                status_code=status_code,
+                detail=self._extract_error_detail(response_data),
+            )
+        )
 
     def _raise_unexpected_response(
         self,

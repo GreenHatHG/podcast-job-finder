@@ -49,7 +49,8 @@ class _HTMLTextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         self._parts.append(data)
 
-    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
         if tag in {"br", "p", "div", "li", "ul", "ol", "section", "h1", "h2", "h3"}:
             self._parts.append("\n")
 
@@ -76,8 +77,13 @@ class CommentInfo:
         header_template = (
             TOP_LEVEL_COMMENT_TEMPLATE if indent_level == 0 else REPLY_COMMENT_TEMPLATE
         )
+        header_text = header_template.format(
+            index=index_label,
+            author=self.author,
+            created_at=self.created_at,
+        )
         lines = [
-            f"{indent}{header_template.format(index=index_label, author=self.author, created_at=self.created_at)}",
+            f"{indent}{header_text}",
             f"{indent}{self.text}",
         ]
         for reply_index, reply in enumerate(self.replies, start=1):

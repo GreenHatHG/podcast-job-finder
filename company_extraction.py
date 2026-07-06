@@ -76,6 +76,7 @@ class CompanyExtractionError(ValueError):
 class LlmClientProtocol(Protocol):
     def generate(self, prompt: str) -> str:
         """Generates a text response for the provided prompt."""
+        ...
 
 
 @dataclass(slots=True)
@@ -182,9 +183,6 @@ def parse_company_extraction_output(
     filtered_count = 0
     for company_data in companies_data:
         company = _parse_company_item(company_data)
-        if company is None:
-            continue
-
         normalized_name = _normalize_company_name(company.name)
         if normalized_name in seen_company_names:
             continue
