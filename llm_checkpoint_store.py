@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
-class LlmCheckpointState:
+class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
     status: str
     episode_url: str
     title: str | None
@@ -56,42 +56,36 @@ class LlmCheckpointState:
         if not isinstance(payload, dict):
             raise ValueError("检查点状态必须是对象。")
 
-        status = payload.get("status")
-        if status not in VALID_STATUSES:
-            raise ValueError("检查点状态无效。")
-
-        episode_url = payload.get("episode_url")
-        runtime_signature = payload.get("runtime_signature")
-        filtered_count = payload.get("filtered_count")
-        companies = payload.get("companies", [])
-        if not isinstance(episode_url, str) or not episode_url.strip():
-            raise ValueError("检查点缺少有效的 episode_url。")
-        if not isinstance(runtime_signature, str) or not runtime_signature.strip():
-            raise ValueError("检查点缺少有效的 runtime_signature。")
-        if not isinstance(filtered_count, int):
-            raise ValueError("检查点中的 filtered_count 必须是整数。")
-        if not isinstance(companies, list):
-            raise ValueError("检查点中的 companies 必须是数组。")
-
-        CompanyExtractionResult.from_dict(
-            {
-                "companies": companies,
-                "filtered_count": filtered_count,
-            }
+        status = _parse_checkpoint_status(payload.get("status"))
+        episode_url = _require_non_empty_checkpoint_text(
+            payload.get("episode_url"),
+            "检查点缺少有效的 episode_url。",
         )
-
-        title = payload.get("title")
-        pub_date = payload.get("pub_date")
-        error = payload.get("error")
-        updated_at = payload.get("updated_at")
-        if title is not None and not isinstance(title, str):
-            raise ValueError("检查点中的 title 必须是字符串或 null。")
-        if pub_date is not None and not isinstance(pub_date, str):
-            raise ValueError("检查点中的 pub_date 必须是字符串或 null。")
-        if error is not None and not isinstance(error, str):
-            raise ValueError("检查点中的 error 必须是字符串或 null。")
-        if not isinstance(updated_at, str) or not updated_at.strip():
-            raise ValueError("检查点缺少有效的 updated_at。")
+        runtime_signature = _require_non_empty_checkpoint_text(
+            payload.get("runtime_signature"),
+            "检查点缺少有效的 runtime_signature。",
+        )
+        filtered_count = _require_checkpoint_integer(
+            payload.get("filtered_count"),
+            "检查点中的 filtered_count 必须是整数。",
+        )
+        companies = _require_checkpoint_companies(payload.get("companies", []))
+        title = _require_optional_checkpoint_text(
+            payload.get("title"),
+            "检查点中的 title 必须是字符串或 null。",
+        )
+        pub_date = _require_optional_checkpoint_text(
+            payload.get("pub_date"),
+            "检查点中的 pub_date 必须是字符串或 null。",
+        )
+        error = _require_optional_checkpoint_text(
+            payload.get("error"),
+            "检查点中的 error 必须是字符串或 null。",
+        )
+        updated_at = _require_non_empty_checkpoint_text(
+            payload.get("updated_at"),
+            "检查点缺少有效的 updated_at。",
+        )
 
         return cls(
             status=status,
@@ -106,12 +100,64 @@ class LlmCheckpointState:
         )
 
 
+def _parse_checkpoint_status(value: object) -> str:
+    if value not in VALID_STATUSES:
+        raise ValueError("检查点状态无效。")
+    return str(value)
+
+
+def _require_non_empty_checkpoint_text(value: object, error_message: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(error_message)
+    return value
+
+
+def _require_optional_checkpoint_text(
+    value: object,
+    error_message: str,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(error_message)
+    return value
+
+
+def _require_checkpoint_integer(value: object, error_message: str) -> int:
+    if not isinstance(value, int):
+        raise ValueError(error_message)
+    return value
+
+
+def _require_checkpoint_companies(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValueError("检查点中的 companies 必须是数组。")
+
+    CompanyExtractionResult.from_dict(
+        {
+            "companies": value,
+            "filtered_count": 0,
+        }
+    )
+    return value
+
+
 @dataclass(slots=True, frozen=True)
 class LlmCheckpoint:
     directory_path: str
     state: LlmCheckpointState
     prompt_text: str | None
     response_text: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class LlmCheckpointSavePayload:
+    episode_key: str
+    episode_url: str
+    title: str | None
+    pub_date: str | None
+    runtime_signature: str
+    prompt_text: str
 
 
 class LlmCheckpointStore:
@@ -155,91 +201,84 @@ class LlmCheckpointStore:
             response_text=response_text,
         )
 
-    def save_prepared(
-        self,
-        *,
-        episode_key: str,
-        episode_url: str,
-        title: str | None,
-        pub_date: str | None,
-        runtime_signature: str,
-        prompt_text: str,
-    ) -> None:
-        self._save_checkpoint(
-            episode_key=episode_key,
-            state=LlmCheckpointState(
-                status=STATUS_PREPARED,
-                episode_url=episode_url,
-                title=title,
-                pub_date=pub_date,
-                runtime_signature=runtime_signature,
-                companies=[],
-                filtered_count=0,
-                error=None,
-                updated_at=_build_updated_at(),
-            ),
-            prompt_text=prompt_text,
+    def save_prepared(self, payload: LlmCheckpointSavePayload) -> None:
+        self._save_checkpoint_state(
+            payload=payload,
+            status=STATUS_PREPARED,
             response_text=None,
         )
 
     def save_success(
         self,
+        payload: LlmCheckpointSavePayload,
         *,
-        episode_key: str,
-        episode_url: str,
-        title: str | None,
-        pub_date: str | None,
-        runtime_signature: str,
-        prompt_text: str,
         response_text: str,
         extraction_result: CompanyExtractionResult,
     ) -> None:
-        self._save_checkpoint(
-            episode_key=episode_key,
-            state=LlmCheckpointState(
-                status=STATUS_SUCCESS,
-                episode_url=episode_url,
-                title=title,
-                pub_date=pub_date,
-                runtime_signature=runtime_signature,
-                companies=[
-                    company.to_dict() for company in extraction_result.companies
-                ],
-                filtered_count=extraction_result.filtered_count,
-                error=None,
-                updated_at=_build_updated_at(),
-            ),
-            prompt_text=prompt_text,
+        self._save_checkpoint_state(
+            payload=payload,
+            status=STATUS_SUCCESS,
+            companies=[company.to_dict() for company in extraction_result.companies],
+            filtered_count=extraction_result.filtered_count,
             response_text=response_text,
         )
 
     def save_failed(
         self,
+        payload: LlmCheckpointSavePayload,
         *,
-        episode_key: str,
-        episode_url: str,
-        title: str | None,
-        pub_date: str | None,
-        runtime_signature: str,
-        prompt_text: str,
         error_message: str,
         response_text: str | None,
     ) -> None:
-        self._save_checkpoint(
-            episode_key=episode_key,
-            state=LlmCheckpointState(
-                status=STATUS_FAILED,
-                episode_url=episode_url,
-                title=title,
-                pub_date=pub_date,
-                runtime_signature=runtime_signature,
-                companies=[],
-                filtered_count=0,
-                error=error_message,
-                updated_at=_build_updated_at(),
-            ),
-            prompt_text=prompt_text,
+        self._save_checkpoint_state(
+            payload=payload,
+            status=STATUS_FAILED,
+            error=error_message,
             response_text=response_text,
+        )
+
+    def _save_checkpoint_state(
+        self,
+        *,
+        payload: LlmCheckpointSavePayload,
+        status: str,
+        response_text: str | None,
+        companies: list[dict] | None = None,
+        filtered_count: int = 0,
+        error: str | None = None,
+    ) -> None:
+        self._save_checkpoint(
+            episode_key=payload.episode_key,
+            state=self._build_checkpoint_state(
+                payload=payload,
+                status=status,
+                companies=companies,
+                filtered_count=filtered_count,
+                error=error,
+            ),
+            prompt_text=payload.prompt_text,
+            response_text=response_text,
+        )
+
+    def _build_checkpoint_state(
+        self,
+        *,
+        payload: LlmCheckpointSavePayload,
+        status: str,
+        companies: list[dict] | None = None,
+        filtered_count: int = 0,
+        error: str | None = None,
+    ) -> LlmCheckpointState:
+        return LlmCheckpointState(
+            status=status,
+            episode_url=payload.episode_url,
+            title=payload.title,
+            pub_date=payload.pub_date,
+            runtime_signature=payload.runtime_signature,
+            companies=[] if companies is None else companies,
+            filtered_count=filtered_count,
+            error=error,
+            updated_at=_build_updated_at(),
         )
 
     def _save_checkpoint(
@@ -300,7 +339,7 @@ class LlmCheckpointStore:
         try:
             os.remove(path)
         except FileNotFoundError:
-            return
+            pass
 
 
 def _build_updated_at() -> str:

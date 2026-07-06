@@ -6,10 +6,15 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final, NoReturn, Sequence
 
 from company_extraction import CompanyExtractionError
+from episode_processing_pipeline import (
+    load_pipeline_rate_config_from_env,
+    run_pid_episode_pipeline,
+)
 from episode_company_runner import (
     EpisodeExtractionRuntime,
     EpisodeWorkItem,
@@ -77,7 +82,6 @@ OUTPUT_DIR: Final = "output"
 OUTPUT_FILE_TEMPLATE: Final = "result_{pid}_{timestamp}.json"
 SUMMARY_FILE_TEMPLATE: Final = "summary_{pid}_{timestamp}.json"
 OUTPUT_STATUS_SUCCESS: Final = "success"
-OUTPUT_STATUS_ERROR: Final = "error"
 XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
 DEFAULT_EPISODE_ORDER: Final = "desc"
 SUCCESS_STATUS_TEXT: Final = "ok"
@@ -90,6 +94,17 @@ class CliUsageError(ValueError):
 class _CliArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise CliUsageError(COMMAND_USAGE_TEXT)
+
+
+@dataclass(slots=True, frozen=True)
+class _PidReportData:
+    pid: str
+    model: str
+    base_url: str | None
+    total: int
+    success: int
+    failed: int
+    episodes: list[dict]
 
 
 def main() -> int:
@@ -194,14 +209,9 @@ def _run_send_code_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) 
         mobile_phone_number=parsed_args.mobile,
         area_code=parsed_args.area_code,
     )
-    _print_json(
-        {
-            "status": SUCCESS_STATUS_TEXT,
-            "mobile_phone_number": parsed_args.mobile,
-            "area_code": parsed_args.area_code,
-            "xyz_service_url": XYZ_SERVICE_URL_TEXT,
-        },
-        indent=2,
+    _print_xyz_success_payload(
+        mobile_phone_number=parsed_args.mobile,
+        area_code=parsed_args.area_code,
     )
     return 0
 
@@ -220,15 +230,10 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
         refresh_token=login_result.refresh_token,
     )
     save_auth_session(auth_session)
-    _print_json(
-        {
-            "status": SUCCESS_STATUS_TEXT,
-            "uid": login_result.uid,
-            "mobile_phone_number": parsed_args.mobile,
-            "area_code": parsed_args.area_code,
-            "xyz_service_url": XYZ_SERVICE_URL_TEXT,
-        },
-        indent=2,
+    _print_xyz_success_payload(
+        mobile_phone_number=parsed_args.mobile,
+        area_code=parsed_args.area_code,
+        uid=login_result.uid,
     )
     return 0
 
@@ -236,6 +241,7 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
 def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
     auth_session = load_auth_session()
     extraction_runtime = _load_extraction_runtime()
+    pipeline_rate_config = load_pipeline_rate_config_from_env()
     checkpoint_store = LlmCheckpointStore()
     logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
     episodes = _list_podcast_episodes(
@@ -245,79 +251,36 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         fetch_all=parsed_args.fetch_all,
     )
     logger.info("抓取到 %d 个节目", len(episodes))
-
-    episode_results: list[dict] = []
-    success_count = 0
-    fail_count = 0
-    for episode_index, episode_summary in enumerate(episodes, start=1):
-        episode_url = _build_episode_url(episode_summary.eid)
-        work_item = EpisodeWorkItem(
-            episode_url=episode_url,
+    work_items = [
+        EpisodeWorkItem(
+            episode_url=_build_episode_url(episode_summary.eid),
             eid=episode_summary.eid,
             title=episode_summary.title,
             pub_date=episode_summary.pub_date,
         )
-        logger.info(
-            "正在处理第 %d/%d 个节目：%s",
-            episode_index,
-            len(episodes),
-            episode_summary.title,
-        )
-        try:
-            extraction_outcome = run_episode_company_extraction(
-                work_item=work_item,
-                runtime=extraction_runtime,
-                checkpoint_store=checkpoint_store,
-            )
-            logger.info(
-                "节目处理完成：提取到 %d 家公司，过滤 %d 家",
-                len(extraction_outcome.extraction_result.companies),
-                extraction_outcome.extraction_result.filtered_count,
-            )
-            episode_results.append(extraction_outcome.to_pid_result_record())
-            success_count += 1
-        except (
-            CompanyExtractionError,
-            EmptyLlmResponseError,
-            EpisodeParseError,
-            OpenAiCompatibleConfigError,
-            OpenAiCompatibleLlmError,
-            ValueError,
-        ) as error:
-            logger.info("节目处理失败：%s", error)
-            episode_results.append(
-                {
-                    "status": OUTPUT_STATUS_ERROR,
-                    "eid": episode_summary.eid,
-                    "title": episode_summary.title,
-                    "pub_date": episode_summary.pub_date,
-                    "episode_url": episode_url,
-                    "error": str(error),
-                }
-            )
-            fail_count += 1
+        for episode_summary in episodes
+    ]
+    pipeline_result = run_pid_episode_pipeline(
+        work_items=work_items,
+        runtime=extraction_runtime,
+        checkpoint_store=checkpoint_store,
+        rate_config=pipeline_rate_config,
+    )
+    report_data = _PidReportData(
+        pid=parsed_args.pid,
+        model=extraction_runtime.model,
+        base_url=extraction_runtime.base_url,
+        total=len(episodes),
+        success=pipeline_result.success_count,
+        failed=pipeline_result.fail_count,
+        episodes=pipeline_result.episode_results,
+    )
 
-    output_path = _save_result_file(
-        pid=parsed_args.pid,
-        model=extraction_runtime.model,
-        base_url=extraction_runtime.base_url,
-        total=len(episodes),
-        success=success_count,
-        failed=fail_count,
-        episodes=episode_results,
-    )
+    output_path = _save_result_file(report_data)
     logger.info("结果已保存到 %s", output_path)
-    summary_path = _save_summary_file(
-        pid=parsed_args.pid,
-        model=extraction_runtime.model,
-        base_url=extraction_runtime.base_url,
-        total=len(episodes),
-        success=success_count,
-        failed=fail_count,
-        episodes=episode_results,
-    )
+    summary_path = _save_summary_file(report_data)
     logger.info("公司汇总已保存到 %s", summary_path)
-    return 1 if fail_count > 0 else 0
+    return 1 if pipeline_result.fail_count > 0 else 0
 
 
 def _run_single_episode_mode(episode_url: str) -> int:
@@ -432,34 +395,22 @@ def _build_output_path(template: str, pid: str, timestamp_label: str) -> str:
     return os.path.join(OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label))
 
 
-def _save_summary_file(
-    *,
-    pid: str,
-    model: str,
-    base_url: str | None,
-    total: int,
-    success: int,
-    failed: int,
-    episodes: list[dict],
-) -> str:
-    now = datetime.now(tz=timezone.utc)
-    timestamp_label = now.strftime("%Y%m%d_%H%M%S")
-    output_path = _build_output_path(SUMMARY_FILE_TEMPLATE, pid, timestamp_label)
-    companies = _aggregate_companies(episodes)
-    report = {
-        "pid": pid,
-        "model": model,
-        "base_url": base_url,
-        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "total_episodes": total,
-        "success_episodes": success,
-        "failed_episodes": failed,
-        "unique_company_count": len(companies),
-        "companies": companies,
-    }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+def _save_summary_file(report_data: _PidReportData) -> str:
+    output_path, created_at = _build_output_file_details(
+        SUMMARY_FILE_TEMPLATE,
+        report_data.pid,
+    )
+    companies = _aggregate_companies(report_data.episodes)
+    report = _build_base_report(
+        report_data=report_data,
+        created_at=created_at,
+        total_key="total_episodes",
+        success_key="success_episodes",
+        failed_key="failed_episodes",
+    )
+    report["unique_company_count"] = len(companies)
+    report["companies"] = companies
+    _write_report_json(output_path, report)
     return output_path
 
 
@@ -494,33 +445,70 @@ def _aggregate_companies(episodes: list[dict]) -> list[dict]:
     )
 
 
-def _save_result_file(
+def _save_result_file(report_data: _PidReportData) -> str:
+    output_path, created_at = _build_output_file_details(
+        OUTPUT_FILE_TEMPLATE,
+        report_data.pid,
+    )
+    report = _build_base_report(
+        report_data=report_data,
+        created_at=created_at,
+        total_key="total",
+        success_key="success",
+        failed_key="failed",
+    )
+    report["episodes"] = report_data.episodes
+    _write_report_json(output_path, report)
+    return output_path
+
+
+def _print_xyz_success_payload(
     *,
-    pid: str,
-    model: str,
-    base_url: str | None,
-    total: int,
-    success: int,
-    failed: int,
-    episodes: list[dict],
-) -> str:
+    mobile_phone_number: str,
+    area_code: str,
+    uid: str | None = None,
+) -> None:
+    payload = {
+        "status": SUCCESS_STATUS_TEXT,
+        "mobile_phone_number": mobile_phone_number,
+        "area_code": area_code,
+        "xyz_service_url": XYZ_SERVICE_URL_TEXT,
+    }
+    if uid is not None:
+        payload["uid"] = uid
+    _print_json(payload, indent=2)
+
+
+def _build_output_file_details(template: str, pid: str) -> tuple[str, str]:
     now = datetime.now(tz=timezone.utc)
     timestamp_label = now.strftime("%Y%m%d_%H%M%S")
-    output_path = _build_output_path(OUTPUT_FILE_TEMPLATE, pid, timestamp_label)
-    report = {
-        "pid": pid,
-        "model": model,
-        "base_url": base_url,
-        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "total": total,
-        "success": success,
-        "failed": failed,
-        "episodes": episodes,
+    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _build_output_path(template, pid, timestamp_label), created_at
+
+
+def _build_base_report(
+    *,
+    report_data: _PidReportData,
+    created_at: str,
+    total_key: str,
+    success_key: str,
+    failed_key: str,
+) -> dict[str, object]:
+    return {
+        "pid": report_data.pid,
+        "model": report_data.model,
+        "base_url": report_data.base_url,
+        "created_at": created_at,
+        total_key: report_data.total,
+        success_key: report_data.success,
+        failed_key: report_data.failed,
     }
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    return output_path
+
+
+def _write_report_json(path: str, payload: object) -> None:
+    with open(path, "w", encoding="utf-8") as file_obj:
+        json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+        file_obj.write("\n")
 
 
 def _print_json(payload: object, *, indent: int | None = None) -> None:
