@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Final, Sequence
 
+from tracing import trace_id_var
 from company_extraction import CompanyExtractionError, LlmClientProtocol
 from episode_company_runner import (
     EpisodeExtractionOutcome,
@@ -88,6 +89,7 @@ class _QueuedEpisodeWork:
     total_episodes: int
     work_item: EpisodeWorkItem
     prepared_work: PreparedEpisodeLlmWork
+    trace_id: str
 
 
 class _FatalErrorState:
@@ -197,12 +199,7 @@ def run_pid_episode_pipeline(
     producer_thread = threading.Thread(
         name=PRODUCER_THREAD_NAME,
         target=_produce_episode_tasks,
-        args=(
-            work_items,
-            runtime,
-            producer_limiter,
-            shared_state,
-        ),
+        args=(work_items, runtime, producer_limiter, shared_state),
     )
     consumer_thread = threading.Thread(
         name=CONSUMER_THREAD_NAME,
@@ -250,6 +247,9 @@ def _produce_episode_tasks(
             if shared_state.fatal_error_state.get() is not None:
                 return
 
+            trace_id = _build_trace_id(episode_index, work_item)
+            trace_id_var.set(trace_id)
+
             logger.info(
                 "生产节目任务 %d/%d：%s",
                 episode_index + 1,
@@ -276,6 +276,7 @@ def _produce_episode_tasks(
                         total_episodes=total_episodes,
                         work_item=work_item,
                         prepared_work=episode_work,
+                        trace_id=trace_id,
                     ),
                     fatal_error_state=shared_state.fatal_error_state,
                 )
@@ -287,13 +288,15 @@ def _produce_episode_tasks(
                         error_message=str(error),
                     )
                 )
+            finally:
+                trace_id_var.set("-")
 
         _put_queue_item(
             task_queue=shared_state.task_queue,
             payload=QUEUE_SENTINEL,
             fatal_error_state=shared_state.fatal_error_state,
         )
-    except Exception as error:
+    except Exception as error:  # pylint: disable=broad-exception-caught
         _handle_pipeline_error(shared_state, error)
 
 
@@ -309,6 +312,8 @@ def _consume_episode_tasks(
             )
             if queued_work is None:
                 return
+
+            trace_id_var.set(queued_work.trace_id)
 
             logger.info(
                 "消费节目任务 %d/%d：%s",
@@ -338,8 +343,18 @@ def _consume_episode_tasks(
                         error_message=str(error),
                     )
                 )
-    except Exception as error:
+            finally:
+                trace_id_var.set("-")
+
+    except Exception as error:  # pylint: disable=broad-exception-caught
         _handle_pipeline_error(shared_state, error)
+
+
+def _build_trace_id(episode_index: int, work_item: EpisodeWorkItem) -> str:
+    """根据序号和 eid 生成有意义的 trace_id，例如 001-5f4a8b2c"""
+    eid = work_item.eid or work_item.episode_url.rstrip("/").split("/")[-1]
+    eid_short = eid[-8:] if len(eid) >= 8 else eid.ljust(8, "0")
+    return f"{episode_index:03d}-{eid_short}"
 
 
 def _put_queue_item(

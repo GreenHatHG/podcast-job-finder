@@ -31,6 +31,7 @@ from openai_compatible_llm import (
     load_openai_compatible_config_from_env,
     load_llm_retry_config_from_env,
 )
+from tracing import TraceIdFormatter
 from xiaoyuzhou_auth_store import (
     XiaoyuzhouAuthSession,
     XiaoyuzhouAuthStoreError,
@@ -139,10 +140,20 @@ def main() -> int:
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=_resolve_log_level(),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    # 清空已有的 Handler，避免重复
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+    root_logger.setLevel(_resolve_log_level())
+
+    # 创建 Handler 并使用 TraceIdFormatter
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        TraceIdFormatter(
+            "%(asctime)s %(levelname)s %(name)s [trace_id=%(trace_id)s]: %(message)s"
+        )
     )
+    root_logger.addHandler(handler)
 
 
 def _resolve_log_level() -> int:
