@@ -141,7 +141,7 @@ def main() -> int:
 def _configure_logging() -> None:
     logging.basicConfig(
         level=_resolve_log_level(),
-        format="%(levelname)s:%(name)s:%(message)s",
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
 
