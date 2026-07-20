@@ -3,8 +3,10 @@ name = "podcast-job-finder"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "numpy>=2.4.1",
     "openai>=2.15.0",
     "requests>=2.34.2",
+    "ten-vad>=1.0.6.8",
 ]
 
 [dependency-groups]
