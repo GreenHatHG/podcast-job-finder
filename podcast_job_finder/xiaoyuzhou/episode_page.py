@@ -18,6 +18,7 @@ NEXT_DATA_SCRIPT_PATTERN = re.compile(
     re.DOTALL,
 )
 ZERO_WIDTH_CHARACTERS_PATTERN = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+EPISODE_ID_PATTERN = re.compile(r"^[0-9A-Za-z]{24}$")
 CONTENT_SECTION_TITLE: Final = "标题"
 AUDIO_URL_SECTION_TITLE: Final = "音频 URL"
 BODY_SECTION_TITLE: Final = "正文"
@@ -27,7 +28,26 @@ TOP_LEVEL_COMMENT_TEMPLATE: Final = "评论 {index}｜作者：{author}｜时间
 REPLY_COMMENT_TEMPLATE: Final = "回复 {index}｜作者：{author}｜时间：{created_at}"
 MISSING_NEXT_DATA_ERROR: Final = "未找到 __NEXT_DATA__ 数据块。"
 INVALID_NEXT_DATA_ERROR: Final = "__NEXT_DATA__ JSON 解析失败。"
-INVALID_PAGE_DATA_ERROR: Final = "__NEXT_DATA__ 页面数据格式无效。"
+INVALID_PAGE_DATA_ERROR_TEMPLATE: Final = (
+    "__NEXT_DATA__ 字段格式无效：{field_path}，期望{expected_type}，"
+    "实际为{actual_type}。"
+)
+MISSING_PAGE_DATA_FIELD_ERROR_TEMPLATE: Final = (
+    "__NEXT_DATA__ 缺少必要字段：{field_path}。"
+)
+JSON_OBJECT_TYPE_DESCRIPTION: Final = "对象"
+JSON_LIST_TYPE_DESCRIPTION: Final = "列表"
+JSON_STRING_TYPE_DESCRIPTION: Final = "字符串"
+MISSING_JSON_FIELD: Final = object()
+JSON_TYPE_DESCRIPTIONS: Final[dict[type[object], str]] = {
+    type(None): "null",
+    bool: "布尔值",
+    dict: JSON_OBJECT_TYPE_DESCRIPTION,
+    list: JSON_LIST_TYPE_DESCRIPTION,
+    str: JSON_STRING_TYPE_DESCRIPTION,
+    int: "整数",
+    float: "数字",
+}
 REQUEST_TIMEOUT_SECONDS: Final = 30
 REQUEST_USER_AGENT: Final = DEFAULT_BROWSER_USER_AGENT
 FETCH_URL_ERROR_TEMPLATE: Final = "请求页面失败：{url}"
@@ -131,12 +151,22 @@ class EpisodeInfo:
 
 def parse_episode_html(html_text: str) -> EpisodeInfo:
     page_props = _extract_page_props(html_text)
-    episode_data = _require_dict(page_props.get("episode"))
-    comments_data = _require_optional_list(page_props.get("comments"))
+    episode_data = _require_dict(
+        _require_field(page_props, "episode", "props.pageProps.episode"),
+        "props.pageProps.episode",
+    )
+    comments_field_path = "props.pageProps.comments"
+    comments_data = _require_optional_list(
+        page_props.get("comments"),
+        comments_field_path,
+    )
 
     title = _clean_text(str(episode_data.get("title") or ""))
     content = _extract_episode_content(episode_data)
-    comments = [_parse_comment(comment_data) for comment_data in comments_data]
+    comments = [
+        _parse_comment(comment_data, f"{comments_field_path}[{comment_index}]")
+        for comment_index, comment_data in enumerate(comments_data)
+    ]
     return EpisodeInfo(
         title=title,
         content=content,
@@ -163,7 +193,7 @@ def extract_episode_id_from_url(episode_url: str) -> str | None:
         return None
 
     episode_id = normalized_path.removeprefix(EPISODE_PATH_PREFIX).strip()
-    if not episode_id or "/" in episode_id:
+    if EPISODE_ID_PATTERN.fullmatch(episode_id) is None:
         return None
     return episode_id
 
@@ -196,9 +226,15 @@ def _extract_page_props(html_text: str) -> dict[str, object]:
     except json.JSONDecodeError as error:
         raise EpisodeParseError(INVALID_NEXT_DATA_ERROR) from error
 
-    next_data = _require_dict(parsed_next_data)
-    props = _require_dict(next_data.get("props"))
-    return _require_dict(props.get("pageProps"))
+    next_data = _require_dict(parsed_next_data, "__NEXT_DATA__")
+    props = _require_dict(
+        _require_field(next_data, "props", "props"),
+        "props",
+    )
+    return _require_dict(
+        _require_field(props, "pageProps", "props.pageProps"),
+        "props.pageProps",
+    )
 
 
 def _build_fetch_error_message(episode_url: str, exc: Exception) -> str:
@@ -229,47 +265,107 @@ def _extract_episode_content(episode_data: dict[str, object]) -> str:
 
 
 def _extract_audio_url(episode_data: dict[str, object]) -> str | None:
-    enclosure_data = episode_data.get("enclosure")
-    if not isinstance(enclosure_data, dict):
+    enclosure_field_path = "props.pageProps.episode.enclosure"
+    enclosure_value = episode_data.get("enclosure", MISSING_JSON_FIELD)
+    if enclosure_value is MISSING_JSON_FIELD or enclosure_value is None:
         return None
 
-    audio_url = enclosure_data.get("url")
-    if not isinstance(audio_url, str):
+    enclosure_data = _require_dict(enclosure_value, enclosure_field_path)
+    audio_url_field_path = f"{enclosure_field_path}.url"
+    audio_url = enclosure_data.get("url", MISSING_JSON_FIELD)
+    if audio_url is MISSING_JSON_FIELD or audio_url is None:
         return None
+    if not isinstance(audio_url, str):
+        raise _build_page_data_error(
+            field_path=audio_url_field_path,
+            expected_type=JSON_STRING_TYPE_DESCRIPTION,
+            actual_value=audio_url,
+        )
 
     return audio_url.strip() or None
 
 
-def _parse_comment(comment_data: object) -> CommentInfo:
-    comment_payload = _require_dict(comment_data)
-    author_data = _require_optional_dict(comment_payload.get("author"))
-    replies_data = _require_optional_list(comment_payload.get("replies"))
+def _parse_comment(comment_data: object, field_path: str) -> CommentInfo:
+    comment_payload = _require_dict(comment_data, field_path)
+    author_data = _require_optional_dict(
+        comment_payload.get("author"),
+        f"{field_path}.author",
+    )
+    replies_field_path = f"{field_path}.replies"
+    replies_data = _require_optional_list(
+        comment_payload.get("replies"),
+        replies_field_path,
+    )
     return CommentInfo(
         author=_clean_text(str(author_data.get("nickname") or "")),
         created_at=_clean_text(str(comment_payload.get("createdAt") or "")),
         text=_clean_text(str(comment_payload.get("text") or "")),
-        replies=[_parse_comment(reply_data) for reply_data in replies_data],
+        replies=[
+            _parse_comment(reply_data, f"{replies_field_path}[{reply_index}]")
+            for reply_index, reply_data in enumerate(replies_data)
+        ],
     )
 
 
-def _require_dict(value: object) -> dict[str, object]:
+def _require_dict(value: object, field_path: str) -> dict[str, object]:
     if not isinstance(value, dict):
-        raise EpisodeParseError(INVALID_PAGE_DATA_ERROR)
+        raise _build_page_data_error(
+            field_path=field_path,
+            expected_type=JSON_OBJECT_TYPE_DESCRIPTION,
+            actual_value=value,
+        )
     return value
 
 
-def _require_optional_dict(value: object) -> dict[str, object]:
+def _require_field(
+    payload: dict[str, object],
+    field_name: str,
+    field_path: str,
+) -> object:
+    value = payload.get(field_name, MISSING_JSON_FIELD)
+    if value is MISSING_JSON_FIELD:
+        raise EpisodeParseError(
+            MISSING_PAGE_DATA_FIELD_ERROR_TEMPLATE.format(field_path=field_path)
+        )
+    return value
+
+
+def _require_optional_dict(value: object, field_path: str) -> dict[str, object]:
     if value is None:
         return {}
-    return _require_dict(value)
+    return _require_dict(value, field_path)
 
 
-def _require_optional_list(value: object) -> list[object]:
+def _require_optional_list(value: object, field_path: str) -> list[object]:
     if value is None:
         return []
     if not isinstance(value, list):
-        raise EpisodeParseError(INVALID_PAGE_DATA_ERROR)
+        raise _build_page_data_error(
+            field_path=field_path,
+            expected_type=JSON_LIST_TYPE_DESCRIPTION,
+            actual_value=value,
+        )
     return value
+
+
+def _build_page_data_error(
+    *,
+    field_path: str,
+    expected_type: str,
+    actual_value: object,
+) -> EpisodeParseError:
+    return EpisodeParseError(
+        INVALID_PAGE_DATA_ERROR_TEMPLATE.format(
+            field_path=field_path,
+            expected_type=expected_type,
+            actual_type=_describe_json_type(actual_value),
+        )
+    )
+
+
+def _describe_json_type(value: object) -> str:
+    value_type = type(value)
+    return JSON_TYPE_DESCRIPTIONS.get(value_type, value_type.__name__)
 
 
 def _strip_html_tags(html_fragment: str) -> str:
