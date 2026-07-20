@@ -7,13 +7,13 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Collection, Protocol
 
-from extract_xiaoyuzhou_episode import CommentInfo, EpisodeInfo
 from openai_compatible_llm import (
     EmptyLlmResponseError,
     LlmRetryConfig,
     OpenAiCompatibleLlmError,
     RetryableOpenAiCompatibleLlmError,
 )
+from podcast_job_finder.xiaoyuzhou.episode_page import CommentInfo, EpisodeInfo
 
 
 TITLE_SECTION_LABEL = "标题"

@@ -21,7 +21,6 @@ from episode_company_runner import (
     build_runtime_signature,
     run_episode_company_extraction,
 )
-from extract_xiaoyuzhou_episode import EpisodeParseError
 from llm_checkpoint_store import LlmCheckpointStore
 from openai_compatible_llm import (
     EmptyLlmResponseError,
@@ -32,6 +31,7 @@ from openai_compatible_llm import (
     load_llm_retry_config_from_env,
 )
 from tracing import TraceIdFormatter
+from podcast_job_finder.xiaoyuzhou.episode_page import EpisodeParseError
 from xiaoyuzhou_auth_store import (
     XiaoyuzhouAuthSession,
     XiaoyuzhouAuthStoreError,

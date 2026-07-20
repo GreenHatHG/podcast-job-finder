@@ -15,7 +15,7 @@ from openai import (
     RateLimitError,
 )
 
-from http_user_agents import DEFAULT_BROWSER_USER_AGENT
+from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
 
 
 OPENAI_API_KEY_ENV: Final = "OPENAI_API_KEY"

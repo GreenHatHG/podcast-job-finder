@@ -1,6 +1,6 @@
 """Whitelist for code usage that Vulture cannot infer statically."""
 
-from extract_xiaoyuzhou_episode import _HTMLTextExtractor
+from podcast_job_finder.xiaoyuzhou.episode_page import _HTMLTextExtractor
 
 
 VULTURE_WHITELIST_REFERENCES = (

@@ -13,7 +13,6 @@ from company_extraction import (
     get_company_extraction_prompt_template,
     run_company_extraction_from_prompt,
 )
-from extract_xiaoyuzhou_episode import extract_episode_id_from_url, parse_episode_url
 from llm_checkpoint_store import (
     STATUS_FAILED,
     STATUS_PREPARED,
@@ -23,6 +22,10 @@ from llm_checkpoint_store import (
     LlmCheckpointStore,
 )
 from openai_compatible_llm import LlmRetryConfig
+from podcast_job_finder.xiaoyuzhou.episode_page import (
+    extract_episode_id_from_url,
+    parse_episode_url,
+)
 
 
 logger = logging.getLogger(__name__)

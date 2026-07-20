@@ -8,7 +8,7 @@ from typing import Any, Final, NoReturn
 
 import requests
 
-from http_user_agents import DEFAULT_BROWSER_USER_AGENT
+from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
 
 
 DEFAULT_XYZ_BASE_URL: Final = "http://localhost:23020"

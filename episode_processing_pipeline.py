@@ -19,13 +19,13 @@ from episode_company_runner import (
     restore_or_prepare_episode_work,
     run_prepared_episode_llm_work,
 )
-from extract_xiaoyuzhou_episode import EpisodeParseError
 from llm_checkpoint_store import LlmCheckpointStore
 from openai_compatible_llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmError,
 )
+from podcast_job_finder.xiaoyuzhou.episode_page import EpisodeParseError
 
 
 LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE_ENV: Final = (
