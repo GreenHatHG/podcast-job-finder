@@ -7,6 +7,11 @@ from typing import Final
 import numpy as np
 from numpy.typing import NDArray
 
+from podcast_job_finder.audio._ffmpeg import (
+    START_FFMPEG_ERROR,
+    build_audio_output_arguments,
+    build_ffmpeg_command,
+)
 from podcast_job_finder.audio.vad import (
     VAD_SAMPLE_RATE,
     SpeechSegment,
@@ -15,14 +20,10 @@ from podcast_job_finder.audio.vad import (
 )
 
 
-FFMPEG_EXECUTABLE: Final = "ffmpeg"
-FFMPEG_LOG_LEVEL: Final = "error"
-FFMPEG_AUDIO_CHANNELS: Final = 1
 FFMPEG_SAMPLE_FORMAT: Final = "s16le"
 FFMPEG_PIPE_OUTPUT: Final = "pipe:1"
 AUDIO_FILE_NOT_FOUND_ERROR: Final = "音频文件不存在：{path}"
 AUDIO_PATH_NOT_FILE_ERROR: Final = "音频路径不是普通文件：{path}"
-START_FFMPEG_ERROR: Final = "无法启动 ffmpeg：{error_message}"
 DECODE_AUDIO_ERROR: Final = "ffmpeg 无法解码音频：{path}，{error_message}"
 EMPTY_DECODED_AUDIO_ERROR: Final = "音频解码后没有声音数据：{path}"
 
@@ -92,19 +93,10 @@ def _validate_audio_path(audio_path: Path) -> None:
 
 def _build_decode_command(audio_path: Path) -> list[str]:
     return [
-        FFMPEG_EXECUTABLE,
-        "-hide_banner",
-        "-loglevel",
-        FFMPEG_LOG_LEVEL,
-        "-nostdin",
+        *build_ffmpeg_command(),
         "-i",
         str(audio_path),
-        "-map",
-        "0:a:0",
-        "-ac",
-        str(FFMPEG_AUDIO_CHANNELS),
-        "-ar",
-        str(VAD_SAMPLE_RATE),
+        *build_audio_output_arguments(sample_rate=VAD_SAMPLE_RATE),
         "-f",
         FFMPEG_SAMPLE_FORMAT,
         FFMPEG_PIPE_OUTPUT,
