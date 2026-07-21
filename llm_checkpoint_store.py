@@ -4,12 +4,16 @@ import hashlib
 import json
 import logging
 import os
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Final
 
 from company_extraction import CompanyExtractionResult
+from podcast_job_finder.filesystem import (
+    DEFAULT_FILE_CREATION_MODE,
+    atomic_write_text,
+)
 
 
 CHECKPOINT_ROOT_DIR: Final = os.path.join("output", "checkpoints", "episodes")
@@ -320,20 +324,14 @@ class LlmCheckpointStore:
 
     def _write_json_file(self, path: str, payload: object) -> None:
         content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        self._write_atomic_text(path, content)
+        self._write_text_file(path, content)
 
     def _write_text_file(self, path: str, content: str) -> None:
-        self._write_atomic_text(path, content)
-
-    def _write_atomic_text(self, path: str, content: str) -> None:
-        temp_path = f"{path}.tmp.{uuid.uuid4().hex}"
-        try:
-            with open(temp_path, "w", encoding="utf-8") as file_obj:
-                file_obj.write(content)
-            os.replace(temp_path, path)
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        atomic_write_text(
+            Path(path),
+            content,
+            mode=DEFAULT_FILE_CREATION_MODE,
+        )
 
     def _remove_file_if_exists(self, path: str) -> None:
         try:

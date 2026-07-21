@@ -13,10 +13,14 @@ from podcast_job_finder.audio.pcm_decode import (
     decode_audio_file,
 )
 from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, SpeechSegment
+from podcast_job_finder.filesystem import (
+    AtomicWriteConflictError,
+    DEFAULT_FILE_CREATION_MODE,
+    atomic_write_file,
+)
 
 
 SEGMENT_FILE_NAME_TEMPLATE: Final = "segment_{index:04d}_{start_time}_{end_time}.wav"
-PARTIAL_FILE_SUFFIX: Final = ".part"
 DEFAULT_SILENCE_PADDING_MS: Final = 500
 MILLISECONDS_PER_SECOND: Final = 1_000
 SECONDS_PER_MINUTE: Final = 60
@@ -30,7 +34,6 @@ EXISTING_SEGMENT_ERROR: Final = "音频片段文件已经存在：{path}"
 DECODE_FOR_EXPORT_ERROR: Final = "导出音频片段前解码失败：{error_message}"
 EXPORT_SEGMENT_ERROR: Final = "无法导出音频片段：{path}，{error_message}"
 EMPTY_SEGMENT_ERROR: Final = "导出的音频片段没有声音数据：{path}"
-PUBLISH_SEGMENT_ERROR: Final = "无法保存音频片段：{path}，{error_message}"
 
 
 class AudioSegmentExportError(RuntimeError):
@@ -84,6 +87,7 @@ def export_speech_segments(
             exported_segment.segment,
             target_path=exported_segment.file_path,
             silence=silence,
+            overwrite=overwrite,
         )
     return exported_segments
 
@@ -141,15 +145,31 @@ def _export_segment_file(
     *,
     target_path: Path,
     silence: bytes,
+    overwrite: bool,
 ) -> None:
-    partial_path = target_path.with_suffix(f"{target_path.suffix}{PARTIAL_FILE_SUFFIX}")
-    partial_path.unlink(missing_ok=True)
+    segment_samples = _slice_segment(samples, segment, target_path=target_path)
     try:
-        segment_samples = _slice_segment(samples, segment, target_path=target_path)
-        _write_wav_file(partial_path, segment_samples, silence=silence)
-        _publish_segment_file(partial_path, target_path)
-    finally:
-        partial_path.unlink(missing_ok=True)
+        atomic_write_file(
+            target_path,
+            write=lambda temporary_path: _write_wav_file(
+                temporary_path,
+                segment_samples,
+                silence=silence,
+            ),
+            overwrite=overwrite,
+            mode=DEFAULT_FILE_CREATION_MODE,
+        )
+    except AtomicWriteConflictError:
+        raise AudioSegmentExportError(
+            EXISTING_SEGMENT_ERROR.format(path=target_path)
+        ) from None
+    except OSError as error:
+        raise AudioSegmentExportError(
+            EXPORT_SEGMENT_ERROR.format(
+                path=target_path,
+                error_message=str(error),
+            )
+        ) from error
 
 
 def _decode_audio_for_export(audio_path: Path) -> NDArray[np.int16]:
@@ -201,18 +221,6 @@ def _write_wav_file(
         raise AudioSegmentExportError(
             EXPORT_SEGMENT_ERROR.format(
                 path=output_path,
-                error_message=str(error),
-            )
-        ) from error
-
-
-def _publish_segment_file(partial_path: Path, target_path: Path) -> None:
-    try:
-        partial_path.replace(target_path)
-    except OSError as error:
-        raise AudioSegmentExportError(
-            PUBLISH_SEGMENT_ERROR.format(
-                path=target_path,
                 error_message=str(error),
             )
         ) from error
