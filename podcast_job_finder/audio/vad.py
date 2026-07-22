@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 from ten_vad import TenVad  # type: ignore[import-untyped]
 
+from podcast_job_finder.audio._segment_split import split_long_segments
 from podcast_job_finder.audio.normalized_audio import NormalizedAudio
 
 
@@ -39,10 +40,6 @@ MIN_ADAPTIVE_THRESHOLD: Final = 0.2
 
 # 自动提高判断标准时允许达到的最高值，避免漏掉大部分正常说话声。
 MAX_ADAPTIVE_THRESHOLD: Final = 0.9
-
-# 长片段播放到最长时间的这个比例后，才开始寻找合适的切分位置。
-# 0.5 表示从当前起点后的半个最长时间处开始找，避免过早切出很短的片段。
-MIN_LONG_SEGMENT_SEARCH_RATIO: Final = 0.5
 
 
 @dataclass(slots=True, frozen=True)
@@ -144,7 +141,7 @@ def _detect_speech_segments(
     )
 
     # 第四步：把时间太长的内容优先从停顿处切开，控制单个片段长度。
-    split_segments = _split_long_segments(
+    split_segments = split_long_segments(
         merged_segments,
         speech_frames=speech_frames,
         audio=audio,
@@ -152,6 +149,7 @@ def _detect_speech_segments(
             config.max_speech_duration_ms,
             frame_duration_ms,
         ),
+        frame_samples=VAD_FRAME_SAMPLES,
     )
 
     # 第五步：把内部使用的帧位置转换成精确的采样位置。
@@ -314,88 +312,6 @@ def _merge_short_segments(
         # 两个片段都达到最短要求，保留当前片段原有的范围。
         merged.append((start_frame, end_frame))
     return merged
-
-
-def _split_long_segments(
-    segments: list[tuple[int, int]],
-    *,
-    speech_frames: NDArray[np.bool_],
-    audio: NormalizedAudio,
-    max_speech_frames: int,
-) -> list[tuple[int, int]]:
-    """把超过最长时间的片段切成多个较短片段。
-
-    每次优先在允许范围内寻找自然停顿；缺少停顿时选择声音较轻的位置。
-    一段音频可能需要切分多次，直到剩余内容符合长度要求。
-    """
-    split_segments: list[tuple[int, int]] = []
-    for start_frame, end_frame in segments:
-        current_start = start_frame
-
-        # 剩余内容仍然过长时，保存切分点前面的部分，再继续处理后面的内容。
-        while end_frame - current_start > max_speech_frames:
-            cut_frame = _find_natural_cut_frame(
-                current_start,
-                speech_frames=speech_frames,
-                audio=audio,
-                max_speech_frames=max_speech_frames,
-            )
-            split_segments.append((current_start, cut_frame))
-            current_start = cut_frame
-
-        # 保存最后一段已经符合长度要求的内容。
-        if end_frame > current_start:
-            split_segments.append((current_start, end_frame))
-    return split_segments
-
-
-def _find_natural_cut_frame(
-    segment_start: int,
-    *,
-    speech_frames: NDArray[np.bool_],
-    audio: NormalizedAudio,
-    max_speech_frames: int,
-) -> int:
-    """在片段允许的长度内，寻找听起来更自然的切分位置。
-
-    搜索范围从“当前起点加一半最长时间”开始，到“当前起点加完整最长时间”
-    结束。优先选择范围内靠后的安静位置，让片段尽量完整；范围内一直有人
-    说话时，会改用声音最轻的位置作为切分点。
-    """
-    # 从当前起点向后跳过一半最长时间，再开始寻找，避免过早切出很短的片段。
-    search_start = segment_start + int(
-        max_speech_frames * MIN_LONG_SEGMENT_SEARCH_RATIO
-    )
-    search_end = min(segment_start + max_speech_frames, len(speech_frames))
-
-    # 找出搜索范围内所有安静位置，并选择最后一个，让当前片段保留更多内容。
-    silence_candidates = np.flatnonzero(~speech_frames[search_start:search_end])
-    if silence_candidates.size:
-        return search_start + int(silence_candidates[-1]) + 1
-
-    # 连续说话缺少明显停顿时，选择声音最轻的位置，降低从词语中间切开的概率。
-    return _find_lowest_energy_frame(audio, search_start, search_end)
-
-
-def _find_lowest_energy_frame(
-    audio: NormalizedAudio,
-    search_start_frame: int,
-    search_end_frame: int,
-) -> int:
-    """比较指定范围内每个小段的音量，返回声音最轻的位置。
-
-    这个函数用于连续说话、找不到安静位置的情况。声音较轻的位置更可能是
-    换气、轻微停顿或词语之间的空隙，从这里切开通常更自然。
-    """
-    samples = audio.read_samples(
-        search_start_frame * VAD_FRAME_SAMPLES,
-        search_end_frame * VAD_FRAME_SAMPLES,
-    )
-    frames = samples.reshape(-1, VAD_FRAME_SAMPLES).astype(np.int32)
-    frame_energies = np.abs(frames).sum(axis=1, dtype=np.int64)
-
-    # 找到音量最小的小段，并把它的结束位置作为切分点。
-    return search_start_frame + int(np.argmin(frame_energies)) + 1
 
 
 def _milliseconds_to_frames(duration_ms: int, frame_duration_ms: float) -> int:
