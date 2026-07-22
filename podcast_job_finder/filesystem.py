@@ -19,7 +19,6 @@ TEMPORARY_FILE_NAME_TEMPLATE: Final = ".{target_name}.{random_token}.tmp"
 TEMPORARY_FILE_RANDOM_BYTES: Final = 16
 TEMPORARY_FILE_CREATION_ATTEMPTS: Final = 100
 CREATE_TEMPORARY_FILE_ERROR_TEMPLATE: Final = "无法创建唯一临时文件：{target_path}"
-CLOSE_TEMPORARY_FILE_ERROR_TEMPLATE: Final = "关闭临时文件失败：{path}，{error_message}"
 REMOVE_TEMPORARY_FILE_ERROR_TEMPLATE: Final = (
     "清理临时文件失败：{path}，{error_message}"
 )
@@ -27,6 +26,10 @@ REMOVE_TEMPORARY_FILE_ERROR_TEMPLATE: Final = (
 
 class AtomicWriteConflictError(FileExistsError):
     """禁止覆盖时目标文件已存在。"""
+
+
+class TemporaryFileError(OSError):
+    """临时文件无法创建、关闭或清理。"""
 
 
 def atomic_write_file(
@@ -37,7 +40,7 @@ def atomic_write_file(
     mode: int,
 ) -> None:
     """写完同级临时文件后，按覆盖策略原子发布到目标路径。"""
-    with _temporary_sibling_path(target_path, mode=mode) as temporary_path:
+    with temporary_sibling_path(target_path, mode=mode) as temporary_path:
         write(temporary_path)
         _publish_temporary_file(
             temporary_path,
@@ -67,13 +70,18 @@ def atomic_write_text(
 
 
 @contextmanager
-def _temporary_sibling_path(
+def temporary_sibling_path(
     target_path: Path,
     *,
     mode: int,
+    error_factory: Callable[[str], BaseException] = TemporaryFileError,
 ) -> Iterator[Path]:
     """创建与目标文件位于同一目录的唯一临时文件，并在使用后清理。"""
-    temporary_path = _create_temporary_sibling_path(target_path, mode=mode)
+    try:
+        temporary_path = _create_temporary_sibling_path(target_path, mode=mode)
+    except OSError as error:
+        raise error_factory(str(error)) from error
+
     active_error: BaseException | None = None
     try:
         yield temporary_path
@@ -81,7 +89,10 @@ def _temporary_sibling_path(
         active_error = error
         raise
     finally:
-        _remove_temporary_file(temporary_path, active_error)
+        try:
+            _remove_temporary_file(temporary_path, active_error)
+        except OSError as error:
+            raise error_factory(str(error)) from error
 
 
 def _publish_temporary_file(
@@ -105,7 +116,7 @@ def _create_temporary_sibling_path(target_path: Path, *, mode: int) -> Path:
         mode=mode,
     )
     try:
-        _close_file_descriptor(file_descriptor, temporary_path, None)
+        os.close(file_descriptor)
     except BaseException as error:  # pylint: disable=broad-exception-caught
         _remove_temporary_file(temporary_path, error)
         raise
@@ -137,24 +148,6 @@ def _open_temporary_sibling_file(
     raise FileExistsError(
         CREATE_TEMPORARY_FILE_ERROR_TEMPLATE.format(target_path=target_path)
     )
-
-
-def _close_file_descriptor(
-    file_descriptor: int,
-    temporary_path: Path,
-    active_error: BaseException | None,
-) -> None:
-    try:
-        os.close(file_descriptor)
-    except OSError as error:
-        message = CLOSE_TEMPORARY_FILE_ERROR_TEMPLATE.format(
-            path=temporary_path,
-            error_message=str(error),
-        )
-        if active_error is not None:
-            active_error.add_note(message)
-            return
-        raise
 
 
 def _remove_temporary_file(

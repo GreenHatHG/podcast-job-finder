@@ -7,6 +7,8 @@ import numpy as np
 from numpy.typing import NDArray
 from ten_vad import TenVad  # type: ignore[import-untyped]
 
+from podcast_job_finder.audio.normalized_audio import NormalizedAudio
+
 
 # 检测前统一使用的音频采样率。16000 表示每秒读取 16000 个声音数据点。
 # TEN VAD 按这个采样率工作，输入音频需要先转换成相同格式。
@@ -41,16 +43,25 @@ MAX_ADAPTIVE_THRESHOLD: Final = 0.9
 # 长片段播放到最长时间的这个比例后，才开始寻找合适的切分位置。
 # 0.5 表示从当前起点后的半个最长时间处开始找，避免过早切出很短的片段。
 MIN_LONG_SEGMENT_SEARCH_RATIO: Final = 0.5
-INVALID_SAMPLE_RATE_ERROR: Final = (
-    "TEN VAD 仅支持 {expected_rate} Hz PCM，实际采样率为 {actual_rate} Hz。"
-)
-INVALID_AUDIO_SHAPE_ERROR: Final = "TEN VAD 需要单声道一维 PCM 样本。"
 
 
 @dataclass(slots=True, frozen=True)
 class SpeechSegment:
-    start_ms: int
-    end_ms: int
+    # 片段第一个采样点在规范化音频中的位置。
+    start_sample: int
+
+    # 片段结束位置；该位置对应的采样点不包含在片段内。
+    end_sample: int
+
+    @property
+    def start_ms(self) -> int:
+        """返回用于展示的开始毫秒；四舍五入可能产生轻微精度差异。"""
+        return _samples_to_milliseconds(self.start_sample)
+
+    @property
+    def end_ms(self) -> int:
+        """返回用于展示的结束毫秒；四舍五入可能产生轻微精度差异。"""
+        return _samples_to_milliseconds(self.end_sample)
 
     @property
     def duration_ms(self) -> int:
@@ -97,38 +108,21 @@ class VadConfig:
             raise ValueError("min_silence_duration_ms 必须大于 0。")
 
 
-def detect_speech_segments(
-    samples: NDArray[np.int16],
+def _detect_speech_segments(
+    audio: NormalizedAudio,
     *,
-    sample_rate: int = VAD_SAMPLE_RATE,
     config: VadConfig = VadConfig(),
 ) -> list[SpeechSegment]:
-    """从一整段声音中找出自然的说话片段，并返回每段的开始和结束时间。
-
-    处理过程依次完成声音格式整理、人声判断、自然停顿切分、短片段合并、
-    长片段切分和时间单位转换。
-    """
-    # TEN VAD 按固定采样率工作，先确认输入声音符合它的要求。
-    if sample_rate != VAD_SAMPLE_RATE:
-        raise ValueError(
-            INVALID_SAMPLE_RATE_ERROR.format(
-                expected_rate=VAD_SAMPLE_RATE,
-                actual_rate=sample_rate,
-            )
-        )
-
-    # 将输入整理成连续的单声道整数数据，保证后续每一步使用相同格式。
-    normalized_samples = _normalize_samples(samples)
-
+    """从规范化 WAV 中流式检测说话片段。"""
     # 少于一个完整判断单位的声音无法识别人声，主要处理空音频或异常短输入。
-    if normalized_samples.size < VAD_FRAME_SAMPLES:
+    if audio.sample_count < VAD_FRAME_SAMPLES:
         return []
 
     # 计算每个小段代表多少毫秒，供时间配置和最终结果换算使用。
-    frame_duration_ms = VAD_FRAME_SAMPLES / sample_rate * 1_000
+    frame_duration_ms = VAD_FRAME_SAMPLES / audio.sample_rate * 1_000
 
     # 第一步：逐个检查约 16 毫秒的小段，记录每一小段是否有人说话。
-    speech_frames = _classify_speech_frames(normalized_samples, config.threshold)
+    speech_frames = _classify_speech_frames(audio, config.threshold)
 
     # 第二步：从开始说话起持续往后检查，短暂停顿前后的说话内容会合并成一个片段；
     # 遇到足够长的安静后，结束并保存这个片段。
@@ -153,28 +147,19 @@ def detect_speech_segments(
     split_segments = _split_long_segments(
         merged_segments,
         speech_frames=speech_frames,
-        samples=normalized_samples,
+        audio=audio,
         max_speech_frames=_milliseconds_to_frames(
             config.max_speech_duration_ms,
             frame_duration_ms,
         ),
     )
 
-    # 第五步：把内部使用的小段位置换算成更易使用的毫秒时间。
-    return _convert_to_milliseconds(split_segments, frame_duration_ms)
-
-
-def _normalize_samples(samples: NDArray[np.int16]) -> NDArray[np.int16]:
-    normalized_samples = np.asarray(samples)
-    if normalized_samples.ndim != 1:
-        raise ValueError(INVALID_AUDIO_SHAPE_ERROR)
-    if normalized_samples.dtype != np.int16:
-        normalized_samples = normalized_samples.astype(np.int16)
-    return np.ascontiguousarray(normalized_samples)
+    # 第五步：把内部使用的帧位置转换成精确的采样位置。
+    return _convert_to_segments(split_segments)
 
 
 def _classify_speech_frames(
-    samples: NDArray[np.int16],
+    audio: NormalizedAudio,
     configured_threshold: float,
 ) -> NDArray[np.bool_]:
     """把整段声音切成约 16 毫秒的小段，逐段判断是否有人说话。
@@ -184,30 +169,39 @@ def _classify_speech_frames(
     过长片段也会参考这份结果选择更合适的切分位置。
     """
     # 只处理长度完整的小段，结尾不足 16 毫秒的部分无法单独完成判断。
-    frame_count = samples.size // VAD_FRAME_SAMPLES
-    usable_samples = samples[: frame_count * VAD_FRAME_SAMPLES]
+    frame_count = audio.sample_count // VAD_FRAME_SAMPLES
 
     # 根据整段音频的平均音量调整判断标准，兼顾轻声录音和较响的背景声。
-    threshold = _adapt_threshold(usable_samples, configured_threshold)
+    threshold = _adapt_threshold(
+        audio,
+        configured_threshold,
+        sample_count=frame_count * VAD_FRAME_SAMPLES,
+    )
     vad = TenVad(VAD_FRAME_SAMPLES, threshold)
     speech_frames = np.zeros(frame_count, dtype=np.bool_)
 
     # 按播放顺序检查每个小段，并记下这一小段里是否有人说话。
-    for frame_index in range(frame_count):
-        frame_start = frame_index * VAD_FRAME_SAMPLES
-        frame = usable_samples[frame_start : frame_start + VAD_FRAME_SAMPLES]
+    frames = audio.iter_samples(chunk_samples=VAD_FRAME_SAMPLES)
+    for frame_index, frame in enumerate(frames):
+        if frame_index == frame_count:
+            break
         _, is_speech = vad.process(frame)
         speech_frames[frame_index] = is_speech == 1
     return speech_frames
 
 
-def _adapt_threshold(samples: NDArray[np.int16], threshold: float) -> float:
+def _adapt_threshold(
+    audio: NormalizedAudio,
+    threshold: float,
+    *,
+    sample_count: int,
+) -> float:
     """根据整段音频的平均音量，微调判断“是否有人说话”的严格程度。
 
     较响的录音会采用更严格的标准，减少背景声干扰；较轻的录音会采用更宽松的
     标准，增加识别出轻声说话的机会；音量适中时保持用户设置的原值。
     """
-    audio_energy = float(np.mean(np.abs(samples.astype(np.int32))))
+    audio_energy = _calculate_mean_energy(audio, sample_count=sample_count)
 
     # 整体音量较响时提高判断标准，并限制最高值，避免漏掉大量正常说话声。
     if audio_energy > HIGH_ENERGY_THRESHOLD:
@@ -223,6 +217,26 @@ def _adapt_threshold(samples: NDArray[np.int16], threshold: float) -> float:
             min(threshold * LOW_ENERGY_THRESHOLD_MULTIPLIER, threshold),
         )
     return threshold
+
+
+def _calculate_mean_energy(
+    audio: NormalizedAudio,
+    *,
+    sample_count: int,
+) -> float:
+    absolute_sum = 0
+    processed_samples = 0
+    chunks = audio.iter_samples()
+    for samples in chunks:
+        remaining_samples = sample_count - processed_samples
+        current_samples = samples[:remaining_samples]
+        absolute_sum += int(
+            np.abs(current_samples.astype(np.int32)).sum(dtype=np.int64)
+        )
+        processed_samples += int(current_samples.size)
+        if processed_samples == sample_count:
+            break
+    return absolute_sum / processed_samples
 
 
 def _build_natural_segments(
@@ -306,7 +320,7 @@ def _split_long_segments(
     segments: list[tuple[int, int]],
     *,
     speech_frames: NDArray[np.bool_],
-    samples: NDArray[np.int16],
+    audio: NormalizedAudio,
     max_speech_frames: int,
 ) -> list[tuple[int, int]]:
     """把超过最长时间的片段切成多个较短片段。
@@ -323,7 +337,7 @@ def _split_long_segments(
             cut_frame = _find_natural_cut_frame(
                 current_start,
                 speech_frames=speech_frames,
-                samples=samples,
+                audio=audio,
                 max_speech_frames=max_speech_frames,
             )
             split_segments.append((current_start, cut_frame))
@@ -339,7 +353,7 @@ def _find_natural_cut_frame(
     segment_start: int,
     *,
     speech_frames: NDArray[np.bool_],
-    samples: NDArray[np.int16],
+    audio: NormalizedAudio,
     max_speech_frames: int,
 ) -> int:
     """在片段允许的长度内，寻找听起来更自然的切分位置。
@@ -360,11 +374,11 @@ def _find_natural_cut_frame(
         return search_start + int(silence_candidates[-1]) + 1
 
     # 连续说话缺少明显停顿时，选择声音最轻的位置，降低从词语中间切开的概率。
-    return _find_lowest_energy_frame(samples, search_start, search_end)
+    return _find_lowest_energy_frame(audio, search_start, search_end)
 
 
 def _find_lowest_energy_frame(
-    samples: NDArray[np.int16],
+    audio: NormalizedAudio,
     search_start_frame: int,
     search_end_frame: int,
 ) -> int:
@@ -373,13 +387,12 @@ def _find_lowest_energy_frame(
     这个函数用于连续说话、找不到安静位置的情况。声音较轻的位置更可能是
     换气、轻微停顿或词语之间的空隙，从这里切开通常更自然。
     """
-    frame_energies = []
-
-    # 逐段计算音量总和，数值越小表示这一小段越安静。
-    for frame_index in range(search_start_frame, search_end_frame):
-        sample_start = frame_index * VAD_FRAME_SAMPLES
-        frame = samples[sample_start : sample_start + VAD_FRAME_SAMPLES]
-        frame_energies.append(np.sum(np.abs(frame.astype(np.int32))))
+    samples = audio.read_samples(
+        search_start_frame * VAD_FRAME_SAMPLES,
+        search_end_frame * VAD_FRAME_SAMPLES,
+    )
+    frames = samples.reshape(-1, VAD_FRAME_SAMPLES).astype(np.int32)
+    frame_energies = np.abs(frames).sum(axis=1, dtype=np.int64)
 
     # 找到音量最小的小段，并把它的结束位置作为切分点。
     return search_start_frame + int(np.argmin(frame_energies)) + 1
@@ -389,15 +402,18 @@ def _milliseconds_to_frames(duration_ms: int, frame_duration_ms: float) -> int:
     return max(1, int(np.ceil(duration_ms / frame_duration_ms)))
 
 
-def _convert_to_milliseconds(
+def _convert_to_segments(
     segments: list[tuple[int, int]],
-    frame_duration_ms: float,
 ) -> list[SpeechSegment]:
     return [
         SpeechSegment(
-            start_ms=round(start_frame * frame_duration_ms),
-            end_ms=round(end_frame * frame_duration_ms),
+            start_sample=start_frame * VAD_FRAME_SAMPLES,
+            end_sample=end_frame * VAD_FRAME_SAMPLES,
         )
         for start_frame, end_frame in segments
         if end_frame > start_frame
     ]
+
+
+def _samples_to_milliseconds(sample_count: int) -> int:
+    return round(sample_count * 1_000 / VAD_SAMPLE_RATE)

@@ -8,10 +8,8 @@ from typing import Final, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from podcast_job_finder.audio.pcm_decode import (
-    AudioFileDecodeError,
-    decode_audio_file,
-)
+from podcast_job_finder.audio._pcm import PCM_SAMPLE_WIDTH_BYTES
+from podcast_job_finder.audio.normalized_audio import NormalizedAudio
 from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, SpeechSegment
 from podcast_job_finder.filesystem import (
     AtomicWriteConflictError,
@@ -21,17 +19,14 @@ from podcast_job_finder.filesystem import (
 
 
 SEGMENT_FILE_NAME_TEMPLATE: Final = "segment_{index:04d}_{start_time}_{end_time}.wav"
-DEFAULT_SILENCE_PADDING_MS: Final = 500
 MILLISECONDS_PER_SECOND: Final = 1_000
 SECONDS_PER_MINUTE: Final = 60
 MINUTES_PER_HOUR: Final = 60
-# s16le PCM 的每个采样点占 16 位，即 2 字节；写 WAV 头和生成静音时都使用该值。
-PCM_SAMPLE_WIDTH_BYTES: Final = 2
-INVALID_SILENCE_PADDING_ERROR: Final = "silence_padding_ms 必须大于等于 0。"
-INVALID_SEGMENT_ERROR: Final = "音频片段时间无效：start_ms={start_ms}，end_ms={end_ms}"
+INVALID_SEGMENT_ERROR: Final = (
+    "音频片段位置无效：start_sample={start_sample}，end_sample={end_sample}"
+)
 OUTPUT_DIR_ERROR: Final = "无法创建音频片段目录：{path}，{error_message}"
 EXISTING_SEGMENT_ERROR: Final = "音频片段文件已经存在：{path}"
-DECODE_FOR_EXPORT_ERROR: Final = "导出音频片段前解码失败：{error_message}"
 EXPORT_SEGMENT_ERROR: Final = "无法导出音频片段：{path}，{error_message}"
 EMPTY_SEGMENT_ERROR: Final = "导出的音频片段没有声音数据：{path}"
 
@@ -42,8 +37,15 @@ class AudioSegmentExportError(RuntimeError):
 
 @dataclass(slots=True, frozen=True)
 class ExportedSpeechSegment:
+    """记录一个语音片段的导出顺序、时间范围和输出文件路径。"""
+
+    # 从 1 开始的导出顺序，同时用于生成文件名中的片段编号。
     index: int
+
+    # VAD 检测得到的精确采样范围。
     segment: SpeechSegment
+
+    # 片段完成导出后对应的 WAV 文件路径。
     file_path: Path
 
     def to_dict(self) -> dict[str, int | str]:
@@ -54,23 +56,15 @@ class ExportedSpeechSegment:
         }
 
 
-def export_speech_segments(
-    audio_path: Path,
+def _export_speech_segments(
+    audio: NormalizedAudio,
     segments: Sequence[SpeechSegment],
-    *,
     output_dir: Path,
-    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
-    overwrite: bool = False,
+    silence_padding_ms: int,
+    overwrite: bool,
 ) -> list[ExportedSpeechSegment]:
-    """按时间段导出 WAV 文件，并在每个文件前后添加静音。
-
-    静音为后续语音识别留出开始和结束缓冲。导出的文件统一为 16 kHz
-    单声道 WAV，文件名同时包含片段编号、开始时间和结束时间。
-    """
-    if silence_padding_ms < 0:
-        raise ValueError(INVALID_SILENCE_PADDING_ERROR)
+    """从规范化 WAV 按采样位置导出说话片段。"""
     _prepare_output_dir(output_dir)
-
     exported_segments = _prepare_exported_segments(
         segments,
         output_dir=output_dir,
@@ -79,12 +73,16 @@ def export_speech_segments(
     if not exported_segments:
         return []
 
-    samples = _decode_audio_for_export(audio_path)
     silence = _build_silence(silence_padding_ms)
     for exported_segment in exported_segments:
+        segment = exported_segment.segment
+        samples = audio.read_samples(segment.start_sample, segment.end_sample)
+        if samples.size == 0:
+            raise AudioSegmentExportError(
+                EMPTY_SEGMENT_ERROR.format(path=exported_segment.file_path)
+            )
         _export_segment_file(
             samples,
-            exported_segment.segment,
             target_path=exported_segment.file_path,
             silence=silence,
             overwrite=overwrite,
@@ -130,24 +128,22 @@ def _prepare_output_dir(output_dir: Path) -> None:
 
 
 def _validate_segment(segment: SpeechSegment) -> None:
-    if segment.start_ms < 0 or segment.end_ms <= segment.start_ms:
+    if segment.start_sample < 0 or segment.end_sample <= segment.start_sample:
         raise ValueError(
             INVALID_SEGMENT_ERROR.format(
-                start_ms=segment.start_ms,
-                end_ms=segment.end_ms,
+                start_sample=segment.start_sample,
+                end_sample=segment.end_sample,
             )
         )
 
 
 def _export_segment_file(
-    samples: NDArray[np.int16],
-    segment: SpeechSegment,
+    segment_samples: NDArray[np.int16],
     *,
     target_path: Path,
     silence: bytes,
     overwrite: bool,
 ) -> None:
-    segment_samples = _slice_segment(samples, segment, target_path=target_path)
     try:
         atomic_write_file(
             target_path,
@@ -172,35 +168,10 @@ def _export_segment_file(
         ) from error
 
 
-def _decode_audio_for_export(audio_path: Path) -> NDArray[np.int16]:
-    try:
-        return decode_audio_file(
-            audio_path,
-            sample_rate=VAD_SAMPLE_RATE,
-        )
-    except AudioFileDecodeError as error:
-        raise AudioSegmentExportError(
-            DECODE_FOR_EXPORT_ERROR.format(error_message=str(error))
-        ) from error
-
-
 def _build_silence(duration_ms: int) -> bytes:
-    sample_count = _milliseconds_to_sample_index(duration_ms)
+    """按 16 kHz 单声道 16 位 PCM 格式生成指定时长的静音字节。"""
+    sample_count = round(duration_ms * VAD_SAMPLE_RATE / MILLISECONDS_PER_SECOND)
     return bytes(sample_count * PCM_SAMPLE_WIDTH_BYTES)
-
-
-def _slice_segment(
-    samples: NDArray[np.int16],
-    segment: SpeechSegment,
-    *,
-    target_path: Path,
-) -> NDArray[np.int16]:
-    start_sample = _milliseconds_to_sample_index(segment.start_ms)
-    end_sample = _milliseconds_to_sample_index(segment.end_ms)
-    segment_samples = samples[start_sample:end_sample]
-    if segment_samples.size == 0:
-        raise AudioSegmentExportError(EMPTY_SEGMENT_ERROR.format(path=target_path))
-    return segment_samples
 
 
 def _write_wav_file(
@@ -224,10 +195,6 @@ def _write_wav_file(
                 error_message=str(error),
             )
         ) from error
-
-
-def _milliseconds_to_sample_index(duration_ms: int) -> int:
-    return round(duration_ms * VAD_SAMPLE_RATE / MILLISECONDS_PER_SECOND)
 
 
 def _format_file_timestamp(timestamp_ms: int) -> str:

@@ -1,18 +1,16 @@
-"""Audio processing primitives."""
+"""Audio processing public API."""
 
-from podcast_job_finder.audio.file_segments import (
-    AudioFileDecodeError,
-    detect_speech_segments_from_file,
-)
+from podcast_job_finder.audio.normalized_audio import AudioFileDecodeError
 from podcast_job_finder.audio.segment_export import (
     AudioSegmentExportError,
     ExportedSpeechSegment,
-    export_speech_segments,
+)
+from podcast_job_finder.audio.speech_pipeline import (
+    detect_and_export_speech_segments,
 )
 from podcast_job_finder.audio.vad import (
     SpeechSegment,
     VadConfig,
-    detect_speech_segments,
 )
 
 __all__ = [
@@ -21,7 +19,5 @@ __all__ = [
     "ExportedSpeechSegment",
     "SpeechSegment",
     "VadConfig",
-    "detect_speech_segments",
-    "detect_speech_segments_from_file",
-    "export_speech_segments",
+    "detect_and_export_speech_segments",
 ]
