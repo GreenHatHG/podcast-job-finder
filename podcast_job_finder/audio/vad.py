@@ -7,7 +7,11 @@ import numpy as np
 from numpy.typing import NDArray
 from ten_vad import TenVad  # type: ignore[import-untyped]
 
-from podcast_job_finder.audio._segment_split import split_long_segments
+from podcast_job_finder.audio._segment_split import (
+    MIN_CUT_POSITION_RATIO,
+    LongSegmentSplitConfig,
+    split_long_segments,
+)
 from podcast_job_finder.audio.normalized_audio import NormalizedAudio
 
 
@@ -18,6 +22,7 @@ VAD_SAMPLE_RATE: Final = 16_000
 # 每次拿多少个声音数据点判断是否有人说话。256 个点约等于 16 毫秒。
 # 数值越小反应越快，数值越大判断范围越长；TEN VAD 推荐保持 256。
 VAD_FRAME_SAMPLES: Final = 256
+VAD_FRAME_DURATION_MS: Final = VAD_FRAME_SAMPLES / VAD_SAMPLE_RATE * 1_000
 
 # 整段音频的平均音量高于这个值时，通常包含较响的背景声。
 # 此时会提高判断标准，减少把背景声当成人声的情况。
@@ -35,11 +40,40 @@ HIGH_ENERGY_THRESHOLD_MULTIPLIER: Final = 1.2
 # 0.8 表示降低 20%；数值越小，越容易识别出轻声，也更容易带入背景声。
 LOW_ENERGY_THRESHOLD_MULTIPLIER: Final = 0.8
 
+# 强制切分时推荐保留的真实音频重叠范围；0 表示关闭重叠。
+MIN_FORCED_SPLIT_OVERLAP_MS: Final = 500
+MAX_FORCED_SPLIT_OVERLAP_MS: Final = 800
+
 # 自动降低判断标准时允许达到的最低值，避免把大量背景声算作人声。
 MIN_ADAPTIVE_THRESHOLD: Final = 0.2
 
 # 自动提高判断标准时允许达到的最高值，避免漏掉大部分正常说话声。
 MAX_ADAPTIVE_THRESHOLD: Final = 0.9
+
+
+def _milliseconds_to_frames(duration_ms: int, frame_duration_ms: float) -> int:
+    return max(1, int(np.ceil(duration_ms / frame_duration_ms)))
+
+
+def _milliseconds_to_frames_allow_zero(
+    duration_ms: int,
+    frame_duration_ms: float,
+) -> int:
+    return int(np.ceil(duration_ms / frame_duration_ms))
+
+
+def _validate_forced_split_overlap_frames(
+    overlap_frames: int,
+    *,
+    max_speech_frames: int,
+) -> None:
+    if overlap_frames == 0:
+        return
+    minimum_cut_advance_frames = int(max_speech_frames * MIN_CUT_POSITION_RATIO)
+    if overlap_frames >= minimum_cut_advance_frames:
+        raise ValueError(
+            "forced_split_overlap_ms 换算后的帧数必须小于最长片段四分之一的帧数。"
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -88,6 +122,10 @@ class VadConfig:
     # 数值越大，单个片段越长；数值越小，生成的片段越多。
     max_speech_duration_ms: int = 30_000
 
+    # 片段因最长时长限制而被强制切开时，相邻片段重复保留的真实音频时长。
+    # 640 毫秒对应 40 个 VAD 帧，用于给识别模型保留切点附近的完整发音。
+    forced_split_overlap_ms: int = 640
+
     # 一段安静持续多久才算一句话结束。单位是毫秒，600 表示 0.6 秒。
     # 数值越大，会忽略普通换气；数值越小，片段会更频繁地在短暂停顿处切开。
     min_silence_duration_ms: int = 600
@@ -101,6 +139,26 @@ class VadConfig:
             raise ValueError(
                 "max_speech_duration_ms 必须大于等于 min_speech_duration_ms。"
             )
+        if self.forced_split_overlap_ms < 0:
+            raise ValueError("forced_split_overlap_ms 必须大于等于 0。")
+        if self.forced_split_overlap_ms and not (
+            MIN_FORCED_SPLIT_OVERLAP_MS
+            <= self.forced_split_overlap_ms
+            <= MAX_FORCED_SPLIT_OVERLAP_MS
+        ):
+            raise ValueError(
+                "forced_split_overlap_ms 必须在 500 到 800 毫秒之间，或设置为 0 关闭。"
+            )
+        _validate_forced_split_overlap_frames(
+            _milliseconds_to_frames_allow_zero(
+                self.forced_split_overlap_ms,
+                VAD_FRAME_DURATION_MS,
+            ),
+            max_speech_frames=_milliseconds_to_frames(
+                self.max_speech_duration_ms,
+                VAD_FRAME_DURATION_MS,
+            ),
+        )
         if self.min_silence_duration_ms <= 0:
             raise ValueError("min_silence_duration_ms 必须大于 0。")
 
@@ -116,7 +174,7 @@ def _detect_speech_segments(
         return []
 
     # 计算每个小段代表多少毫秒，供时间配置和最终结果换算使用。
-    frame_duration_ms = VAD_FRAME_SAMPLES / audio.sample_rate * 1_000
+    frame_duration_ms = VAD_FRAME_DURATION_MS
 
     # 第一步：逐个检查约 16 毫秒的小段，记录每一小段是否有人说话。
     speech_frames = _classify_speech_frames(audio, config.threshold)
@@ -141,15 +199,23 @@ def _detect_speech_segments(
     )
 
     # 第四步：把时间太长的内容优先从停顿处切开，控制单个片段长度。
+    max_speech_frames = _milliseconds_to_frames(
+        config.max_speech_duration_ms,
+        frame_duration_ms,
+    )
+    forced_split_overlap_frames = _milliseconds_to_frames_allow_zero(
+        config.forced_split_overlap_ms,
+        frame_duration_ms,
+    )
     split_segments = split_long_segments(
         merged_segments,
         speech_frames=speech_frames,
         audio=audio,
-        max_speech_frames=_milliseconds_to_frames(
-            config.max_speech_duration_ms,
-            frame_duration_ms,
+        config=LongSegmentSplitConfig(
+            max_speech_frames=max_speech_frames,
+            overlap_frames=forced_split_overlap_frames,
+            frame_samples=VAD_FRAME_SAMPLES,
         ),
-        frame_samples=VAD_FRAME_SAMPLES,
     )
 
     # 第五步：把内部使用的帧位置转换成精确的采样位置。
@@ -312,10 +378,6 @@ def _merge_short_segments(
         # 两个片段都达到最短要求，保留当前片段原有的范围。
         merged.append((start_frame, end_frame))
     return merged
-
-
-def _milliseconds_to_frames(duration_ms: int, frame_duration_ms: float) -> int:
-    return max(1, int(np.ceil(duration_ms / frame_duration_ms)))
 
 
 def _convert_to_segments(

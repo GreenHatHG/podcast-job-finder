@@ -45,35 +45,66 @@ class _CutCandidate:
     mean_energy: float
 
 
+@dataclass(slots=True, frozen=True)
+class LongSegmentSplitConfig:
+    max_speech_frames: int
+    overlap_frames: int
+    frame_samples: int
+
+
 def split_long_segments(
     segments: list[tuple[int, int]],
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    max_speech_frames: int,
-    frame_samples: int,
+    config: LongSegmentSplitConfig,
 ) -> list[tuple[int, int]]:
-    """把超过最长时间的片段优先从完整停顿处切开。"""
+    """把超过最长时间的片段优先从完整停顿处切开并保留重叠音频。"""
     split_segments: list[tuple[int, int]] = []
     for start_frame, end_frame in segments:
         current_start = start_frame
-        while end_frame - current_start > max_speech_frames:
-            cut_frame = _find_natural_cut_frame(
+        # 只有当前剩余内容超过最长时长时，才进入强制切分路径并添加重叠。
+        while end_frame - current_start > config.max_speech_frames:
+            forced_cut_frame = _find_forced_split_cut_frame(
                 current_start,
                 speech_frames=speech_frames,
                 audio=audio,
-                max_speech_frames=max_speech_frames,
-                frame_samples=frame_samples,
+                max_speech_frames=config.max_speech_frames,
+                frame_samples=config.frame_samples,
             )
-            split_segments.append((current_start, cut_frame))
-            current_start = cut_frame
+            split_segments.append((current_start, forced_cut_frame))
+            current_start = _calculate_next_segment_start(
+                segment_start=current_start,
+                cut_frame=forced_cut_frame,
+                overlap_frames=config.overlap_frames,
+                max_speech_frames=config.max_speech_frames,
+            )
 
         if end_frame > current_start:
             split_segments.append((current_start, end_frame))
     return split_segments
 
 
-def _find_natural_cut_frame(
+def _calculate_next_segment_start(
+    *,
+    segment_start: int,
+    cut_frame: int,
+    overlap_frames: int,
+    max_speech_frames: int,
+) -> int:
+    """让下一片段从切点前开始，保留一段重复音频。"""
+    # 计算当前切分算法允许的最大重叠帧数。正常配置已经在 VadConfig 中验证；
+    # 这里继续取较小值，避免内部函数收到异常参数时产生退化切分。
+    max_safe_overlap_frames = int(max_speech_frames * MIN_CUT_POSITION_RATIO)
+    effective_overlap_frames = min(overlap_frames, max_safe_overlap_frames)
+
+    # 常规结果是 cut_frame - effective_overlap_frames。例如切点为第 1000 帧、
+    # 重叠 40 帧时，下一片段从第 960 帧开始。segment_start + 1 是最终保护，
+    # 确保下一轮至少向后推进一帧，避免 while 循环重复处理相同范围。
+    return max(segment_start + 1, cut_frame - effective_overlap_frames)
+
+
+def _find_forced_split_cut_frame(
     segment_start: int,
     *,
     speech_frames: NDArray[np.bool_],
@@ -81,7 +112,7 @@ def _find_natural_cut_frame(
     max_speech_frames: int,
     frame_samples: int,
 ) -> int:
-    """在片段允许的最长时间内，找出听起来最自然的切点。
+    """在强制切分范围内，找出听起来最自然的切点。
 
     函数会收集范围内的连续静音，比较停顿长度、安静程度和切分后的片段长度，
     再从得分最高的停顿中选出具体切点。没有找到可靠停顿时，会选择整个搜索
