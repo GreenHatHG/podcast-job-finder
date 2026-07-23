@@ -96,28 +96,42 @@ def transcribe_speech_segments(
     transcribed_segments: list[TranscribedSpeechSegment] = []
     previous_text = ""
     for segment in segments:
-        logger.info(
-            "识别音频片段：index=%d start_ms=%d end_ms=%d",
-            segment.index,
-            segment.segment.start_ms,
-            segment.segment.end_ms,
-        )
-        text = _transcribe_speech_segment(
+        transcribed_segment = transcribe_speech_segment(
             segment,
             llm_client=llm_client,
             previous_text=previous_text,
             retry_config=retry_config,
         )
-        transcribed_segments.append(
-            TranscribedSpeechSegment(
-                index=segment.index,
-                start_ms=segment.segment.start_ms,
-                end_ms=segment.segment.end_ms,
-                text=text,
-            )
-        )
-        previous_text = text
+        transcribed_segments.append(transcribed_segment)
+        previous_text = transcribed_segment.text
     return AudioTranscriptionResult(segments=transcribed_segments)
+
+
+def transcribe_speech_segment(
+    segment: ExportedSpeechSegment,
+    *,
+    llm_client: AudioTranscriptionClientProtocol,
+    previous_text: str = "",
+    retry_config: LlmRetryConfig | None = None,
+) -> TranscribedSpeechSegment:
+    logger.info(
+        "识别音频片段：index=%d start_ms=%d end_ms=%d",
+        segment.index,
+        segment.segment.start_ms,
+        segment.segment.end_ms,
+    )
+    text = _transcribe_speech_segment(
+        segment,
+        llm_client=llm_client,
+        previous_text=previous_text,
+        retry_config=retry_config,
+    )
+    return TranscribedSpeechSegment(
+        index=segment.index,
+        start_ms=segment.segment.start_ms,
+        end_ms=segment.segment.end_ms,
+        text=text,
+    )
 
 
 def _transcribe_speech_segment(

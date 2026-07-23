@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from company_extraction import (
     CompanyExtractionResult,
@@ -26,6 +24,7 @@ from podcast_job_finder.xiaoyuzhou.episode_page import (
     extract_episode_id_from_url,
     parse_episode_url,
 )
+from runtime_signature import build_runtime_signature_hash
 
 
 logger = logging.getLogger(__name__)
@@ -49,49 +48,40 @@ class EpisodeWorkItem:
     title: str | None = None
     pub_date: str | None = None
 
+    def resolve_episode_id(self) -> str | None:
+        normalized_eid = (self.eid or "").strip()
+        if normalized_eid:
+            return normalized_eid
+        return extract_episode_id_from_url(self.episode_url)
 
-@dataclass(slots=True, frozen=True)
-class _ResolvedEpisodeState:
-    episode_key: str
-    episode_url: str
-    eid: str | None
-    title: str | None
-    pub_date: str | None
-
-    def _base_values(self) -> tuple[str, str, str | None, str | None, str | None]:
-        return (
-            self.episode_key,
-            self.episode_url,
-            self.eid,
-            self.title,
-            self.pub_date,
+    def to_result_metadata(self, *, eid: str | None = None) -> dict[str, object]:
+        return _build_episode_result_metadata(
+            episode_url=self.episode_url,
+            eid=eid or self.eid,
+            title=self.title,
+            pub_date=self.pub_date,
         )
 
-    def to_extraction_outcome(
-        self,
-        extraction_result: CompanyExtractionResult,
-    ) -> "EpisodeExtractionOutcome":
-        return EpisodeExtractionOutcome(*self._base_values(), extraction_result)
-
-    def to_prepared_work(self, prompt_text: str) -> "PreparedEpisodeLlmWork":
-        return PreparedEpisodeLlmWork(*self._base_values(), prompt_text)
-
 
 @dataclass(slots=True, frozen=True)
-class EpisodeExtractionOutcome(_ResolvedEpisodeState):
+class CompletedEpisodeExtraction:
+    episode: EpisodeWorkItem
+    episode_key: str
     extraction_result: CompanyExtractionResult
 
 
 @dataclass(slots=True, frozen=True)
-class PreparedEpisodeLlmWork(_ResolvedEpisodeState):
+class PreparedEpisodeLlmWork:
+    episode: EpisodeWorkItem
+    episode_key: str
     prompt_text: str
 
     def to_checkpoint_payload(self, runtime_signature: str) -> LlmCheckpointSavePayload:
         return LlmCheckpointSavePayload(
             episode_key=self.episode_key,
-            episode_url=self.episode_url,
-            title=self.title,
-            pub_date=self.pub_date,
+            episode_url=self.episode.episode_url,
+            title=self.episode.title,
+            pub_date=self.episode.pub_date,
             runtime_signature=runtime_signature,
             prompt_text=self.prompt_text,
         )
@@ -99,23 +89,25 @@ class PreparedEpisodeLlmWork(_ResolvedEpisodeState):
 
 @dataclass(slots=True, frozen=True)
 class _EpisodeCheckpointContext:
-    work_item: EpisodeWorkItem
-    resolved_eid: str | None
+    episode: EpisodeWorkItem
     episode_key: str
     checkpoint: LlmCheckpoint | None
 
-    def build_episode_state(
+    def build_prepared_work(
         self,
         *,
         title: str | None,
         pub_date: str | None,
-    ) -> _ResolvedEpisodeState:
-        return _ResolvedEpisodeState(
-            self.episode_key,
-            self.work_item.episode_url,
-            self.resolved_eid,
-            title,
-            pub_date,
+        prompt_text: str,
+    ) -> PreparedEpisodeLlmWork:
+        return PreparedEpisodeLlmWork(
+            episode=replace(
+                self.episode,
+                title=title,
+                pub_date=pub_date,
+            ),
+            episode_key=self.episode_key,
+            prompt_text=prompt_text,
         )
 
 
@@ -140,13 +132,7 @@ def build_runtime_signature(
         "company_blacklist": normalized_blacklist,
         "prompt_template": get_company_extraction_prompt_template(),
     }
-    serialized_payload = json.dumps(
-        signature_payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+    return build_runtime_signature_hash(signature_payload)
 
 
 def run_episode_company_extraction(
@@ -154,13 +140,13 @@ def run_episode_company_extraction(
     work_item: EpisodeWorkItem,
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
-) -> EpisodeExtractionOutcome:
+) -> CompletedEpisodeExtraction:
     episode_work = restore_or_prepare_episode_work(
         work_item=work_item,
         runtime=runtime,
         checkpoint_store=checkpoint_store,
     )
-    if isinstance(episode_work, EpisodeExtractionOutcome):
+    if isinstance(episode_work, CompletedEpisodeExtraction):
         return episode_work
     return run_prepared_episode_llm_work(
         prepared_work=episode_work,
@@ -174,14 +160,14 @@ def restore_or_prepare_episode_work(
     work_item: EpisodeWorkItem,
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
-) -> EpisodeExtractionOutcome | PreparedEpisodeLlmWork:
-    checkpoint_outcome = restore_success_checkpoint(
+) -> CompletedEpisodeExtraction | PreparedEpisodeLlmWork:
+    checkpoint_result = restore_success_checkpoint(
         work_item=work_item,
         runtime=runtime,
         checkpoint_store=checkpoint_store,
     )
-    if checkpoint_outcome is not None:
-        return checkpoint_outcome
+    if checkpoint_result is not None:
+        return checkpoint_result
     return prepare_episode_llm_work(
         work_item=work_item,
         runtime=runtime,
@@ -194,7 +180,7 @@ def restore_success_checkpoint(
     work_item: EpisodeWorkItem,
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
-) -> EpisodeExtractionOutcome | None:
+) -> CompletedEpisodeExtraction | None:
     checkpoint_context = _load_episode_checkpoint_context(
         work_item=work_item,
         checkpoint_store=checkpoint_store,
@@ -212,12 +198,20 @@ def restore_success_checkpoint(
     logger.info(
         "命中成功检查点，直接复用：episode_key=%s", checkpoint_context.episode_key
     )
-    return _build_success_outcome_from_checkpoint(
-        checkpoint=checkpoint,
-        episode_state=checkpoint_context.build_episode_state(
+    extraction_result = CompanyExtractionResult.from_dict(
+        {
+            "companies": checkpoint.state.companies,
+            "filtered_count": checkpoint.state.filtered_count,
+        }
+    )
+    return CompletedEpisodeExtraction(
+        episode=replace(
+            checkpoint_context.episode,
             title=_resolve_title(checkpoint.state.title, work_item.title),
             pub_date=_resolve_text(checkpoint.state.pub_date, work_item.pub_date),
         ),
+        episode_key=checkpoint_context.episode_key,
+        extraction_result=extraction_result,
     )
 
 
@@ -244,10 +238,14 @@ def prepare_episode_llm_work(
             and checkpoint.prompt_text
         ):
             logger.info("命中未完成检查点，直接继续 LLM：episode_key=%s", episode_key)
-            return checkpoint_context.build_episode_state(
+            return checkpoint_context.build_prepared_work(
                 title=_resolve_title(checkpoint.state.title, work_item.title),
-                pub_date=_resolve_text(checkpoint.state.pub_date, work_item.pub_date),
-            ).to_prepared_work(checkpoint.prompt_text)
+                pub_date=_resolve_text(
+                    checkpoint.state.pub_date,
+                    work_item.pub_date,
+                ),
+                prompt_text=checkpoint.prompt_text,
+            )
 
     logger.info("抓取节目页面：%s", work_item.episode_url)
     episode = parse_episode_url(work_item.episode_url)
@@ -255,10 +253,11 @@ def prepare_episode_llm_work(
         build_company_extraction_input(episode)
     )
     title = _resolve_title(episode.title, work_item.title)
-    prepared_work = checkpoint_context.build_episode_state(
+    prepared_work = checkpoint_context.build_prepared_work(
         title=title,
         pub_date=work_item.pub_date,
-    ).to_prepared_work(prompt_text)
+        prompt_text=prompt_text,
+    )
     checkpoint_store.save_prepared(
         prepared_work.to_checkpoint_payload(runtime.runtime_signature)
     )
@@ -270,7 +269,7 @@ def run_prepared_episode_llm_work(
     prepared_work: PreparedEpisodeLlmWork,
     checkpoint_store: LlmCheckpointStore,
     runtime: EpisodeExtractionRuntime,
-) -> EpisodeExtractionOutcome:
+) -> CompletedEpisodeExtraction:
     checkpoint_payload = prepared_work.to_checkpoint_payload(runtime.runtime_signature)
     attempt = run_company_extraction_from_prompt(
         prepared_work.prompt_text,
@@ -294,21 +293,11 @@ def run_prepared_episode_llm_work(
         response_text=attempt.response_text,
         extraction_result=attempt.extraction_result,
     )
-    return prepared_work.to_extraction_outcome(attempt.extraction_result)
-
-
-def _build_success_outcome_from_checkpoint(
-    *,
-    checkpoint: LlmCheckpoint,
-    episode_state: _ResolvedEpisodeState,
-) -> EpisodeExtractionOutcome:
-    extraction_result = CompanyExtractionResult.from_dict(
-        {
-            "companies": checkpoint.state.companies,
-            "filtered_count": checkpoint.state.filtered_count,
-        }
+    return CompletedEpisodeExtraction(
+        episode=prepared_work.episode,
+        episode_key=prepared_work.episode_key,
+        extraction_result=attempt.extraction_result,
     )
-    return episode_state.to_extraction_outcome(extraction_result)
 
 
 def _load_episode_checkpoint_context(
@@ -316,24 +305,17 @@ def _load_episode_checkpoint_context(
     work_item: EpisodeWorkItem,
     checkpoint_store: LlmCheckpointStore,
 ) -> _EpisodeCheckpointContext:
-    resolved_eid = _resolve_episode_id(work_item)
+    resolved_eid = work_item.resolve_episode_id()
+    resolved_episode = replace(work_item, eid=resolved_eid)
     episode_key = checkpoint_store.build_episode_key(
         eid=resolved_eid,
         episode_url=work_item.episode_url,
     )
     return _EpisodeCheckpointContext(
-        work_item=work_item,
-        resolved_eid=resolved_eid,
+        episode=resolved_episode,
         episode_key=episode_key,
         checkpoint=checkpoint_store.load(episode_key),
     )
-
-
-def _resolve_episode_id(work_item: EpisodeWorkItem) -> str | None:
-    normalized_eid = _resolve_text(work_item.eid, None)
-    if normalized_eid is not None:
-        return normalized_eid
-    return extract_episode_id_from_url(work_item.episode_url)
 
 
 def _resolve_title(primary: str | None, fallback: str | None) -> str | None:
@@ -348,3 +330,18 @@ def _resolve_text(primary: str | None, fallback: str | None) -> str | None:
     if normalized_fallback:
         return normalized_fallback
     return None
+
+
+def _build_episode_result_metadata(
+    *,
+    episode_url: str,
+    eid: str | None,
+    title: str | None,
+    pub_date: str | None,
+) -> dict[str, object]:
+    return {
+        "eid": eid,
+        "title": title,
+        "pub_date": pub_date,
+        "episode_url": episode_url,
+    }

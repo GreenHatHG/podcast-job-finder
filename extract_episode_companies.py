@@ -6,12 +6,11 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
-from company_extraction import CompanyExtractionError
 from episode_processing_pipeline import (
+    EXPECTED_EPISODE_ERRORS,
     load_pipeline_rate_config_from_env,
     run_pid_episode_pipeline,
 )
@@ -24,14 +23,20 @@ from episode_company_runner import (
 from logging_config import configure_logging
 from llm_checkpoint_store import LlmCheckpointStore
 from openai_compatible_llm import (
-    EmptyLlmResponseError,
+    AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR,
+    CHAT_COMPLETIONS_API_STYLE,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmClient,
-    OpenAiCompatibleLlmError,
     load_openai_compatible_config_from_env,
     load_llm_retry_config_from_env,
 )
-from podcast_job_finder.xiaoyuzhou.episode_page import EpisodeParseError
+from pid_audio_transcription import (
+    PidAudioTranscriptionError,
+    PidAudioTranscriptionRuntime,
+    run_pid_audio_transcription,
+    save_pid_audio_transcription_report,
+)
+from pid_company_report import PidCompanyReportData, save_pid_company_reports
 from xiaoyuzhou_auth_store import (
     XiaoyuzhouAuthSession,
     XiaoyuzhouAuthStoreError,
@@ -58,7 +63,7 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         f"用法：{PROGRAM_NAME} <episode_url>",
         f"      {PROGRAM_NAME} send-code --mobile <手机号> [--area-code +86]",
         f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
-        f"      {PROGRAM_NAME} pid --pid <pid> [--all]",
+        f"      {PROGRAM_NAME} pid --pid <pid> [--all] [--source page|audio]",
     ]
 )
 COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"
@@ -68,6 +73,9 @@ logger = logging.getLogger(__name__)
 SEND_CODE_COMMAND: Final = "send-code"
 LOGIN_COMMAND: Final = "login"
 PID_COMMAND: Final = "pid"
+PAGE_SOURCE: Final = "page"
+AUDIO_SOURCE: Final = "audio"
+SUPPORTED_PID_SOURCES: Final = (PAGE_SOURCE, AUDIO_SOURCE)
 HELP_FLAGS: Final = frozenset({"-h", "--help"})
 SUPPORTED_COMMANDS: Final = frozenset(
     {
@@ -78,9 +86,6 @@ SUPPORTED_COMMANDS: Final = frozenset(
 )
 EPISODE_URL_TEMPLATE: Final = "https://www.xiaoyuzhoufm.com/episode/{eid}"
 OUTPUT_DIR: Final = "output"
-OUTPUT_FILE_TEMPLATE: Final = "result_{pid}_{timestamp}.json"
-SUMMARY_FILE_TEMPLATE: Final = "summary_{pid}_{timestamp}.json"
-OUTPUT_STATUS_SUCCESS: Final = "success"
 XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
 DEFAULT_EPISODE_ORDER: Final = "desc"
 SUCCESS_STATUS_TEXT: Final = "ok"
@@ -93,17 +98,6 @@ class CliUsageError(ValueError):
 class _CliArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise CliUsageError(COMMAND_USAGE_TEXT)
-
-
-@dataclass(slots=True, frozen=True)
-class _PidReportData:
-    pid: str
-    model: str
-    base_url: str | None
-    total: int
-    success: int
-    failed: int
-    episodes: list[dict]
 
 
 def main() -> int:
@@ -124,14 +118,10 @@ def main() -> int:
         return _run_single_episode_mode(raw_args[0])
     except (
         CliUsageError,
-        CompanyExtractionError,
-        EmptyLlmResponseError,
-        EpisodeParseError,
-        OpenAiCompatibleConfigError,
-        OpenAiCompatibleLlmError,
+        *EXPECTED_EPISODE_ERRORS,
+        PidAudioTranscriptionError,
         XiaoyuzhouAuthStoreError,
         XyzClientError,
-        ValueError,
     ) as error:
         print(str(error), file=sys.stderr)
         return 1
@@ -181,6 +171,11 @@ def _build_command_parser() -> argparse.ArgumentParser:
     pid_parser = subparsers.add_parser(PID_COMMAND)
     pid_parser.add_argument("--pid", required=True)
     pid_parser.add_argument("--all", action="store_true", dest="fetch_all")
+    pid_parser.add_argument(
+        "--source",
+        choices=SUPPORTED_PID_SOURCES,
+        default=PAGE_SOURCE,
+    )
     return parser
 
 
@@ -220,9 +215,6 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
 
 def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
     auth_session = load_auth_session()
-    extraction_runtime = _load_extraction_runtime()
-    pipeline_rate_config = load_pipeline_rate_config_from_env()
-    checkpoint_store = LlmCheckpointStore()
     logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
     episodes = _list_podcast_episodes(
         xyz_client=xyz_client,
@@ -240,38 +232,62 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         )
         for episode_summary in episodes
     ]
+    if parsed_args.source == AUDIO_SOURCE:
+        return _run_pid_audio_mode(parsed_args.pid, work_items)
+    return _run_pid_page_mode(parsed_args.pid, work_items)
+
+
+def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+    extraction_runtime = _load_extraction_runtime()
+    pipeline_rate_config = load_pipeline_rate_config_from_env()
     pipeline_result = run_pid_episode_pipeline(
         work_items=work_items,
         runtime=extraction_runtime,
-        checkpoint_store=checkpoint_store,
+        checkpoint_store=LlmCheckpointStore(),
         rate_config=pipeline_rate_config,
     )
-    report_data = _PidReportData(
-        pid=parsed_args.pid,
+    report_data = PidCompanyReportData(
+        pid=pid,
         model=extraction_runtime.model,
         base_url=extraction_runtime.base_url,
-        total=len(episodes),
+        total=len(work_items),
         success=pipeline_result.success_count,
         failed=pipeline_result.fail_count,
         episodes=pipeline_result.episode_results,
     )
 
-    output_path = _save_result_file(report_data)
+    output_path, summary_path = save_pid_company_reports(report_data)
     logger.info("结果已保存到 %s", output_path)
-    summary_path = _save_summary_file(report_data)
     logger.info("公司汇总已保存到 %s", summary_path)
     return 1 if pipeline_result.fail_count > 0 else 0
+
+
+def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+    runtime = _load_audio_transcription_runtime()
+    result = run_pid_audio_transcription(
+        pid=pid,
+        work_items=work_items,
+        runtime=runtime,
+    )
+    report_path = save_pid_audio_transcription_report(
+        pid=pid,
+        runtime=runtime,
+        result=result,
+        output_dir=Path(OUTPUT_DIR),
+    )
+    logger.info("音频转写批次报告已保存到 %s", report_path)
+    return 1 if result.fail_count > 0 else 0
 
 
 def _run_single_episode_mode(episode_url: str) -> int:
     logger.info("处理单个节目：%s", episode_url)
     extraction_runtime = _load_extraction_runtime()
-    extraction_outcome = run_episode_company_extraction(
+    completed_extraction = run_episode_company_extraction(
         work_item=EpisodeWorkItem(episode_url=episode_url),
         runtime=extraction_runtime,
         checkpoint_store=LlmCheckpointStore(),
     )
-    _print_json(extraction_outcome.extraction_result.to_dict(), indent=2)
+    _print_json(completed_extraction.extraction_result.to_dict(), indent=2)
     return 0
 
 
@@ -293,6 +309,17 @@ def _load_extraction_runtime() -> EpisodeExtractionRuntime:
             api_style=llm_config.api_style,
             company_blacklist=company_blacklist,
         ),
+    )
+
+
+def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
+    llm_config = load_openai_compatible_config_from_env()
+    if llm_config.api_style != CHAT_COMPLETIONS_API_STYLE:
+        raise OpenAiCompatibleConfigError(AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR)
+    return PidAudioTranscriptionRuntime(
+        llm_client=OpenAiCompatibleLlmClient(llm_config),
+        retry_config=load_llm_retry_config_from_env(),
+        llm_config=llm_config,
     )
 
 
@@ -370,78 +397,6 @@ def _build_episode_url(eid: str) -> str:
     return EPISODE_URL_TEMPLATE.format(eid=eid)
 
 
-def _build_output_path(template: str, pid: str, timestamp_label: str) -> str:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    return os.path.join(OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label))
-
-
-def _save_summary_file(report_data: _PidReportData) -> str:
-    output_path, created_at = _build_output_file_details(
-        SUMMARY_FILE_TEMPLATE,
-        report_data.pid,
-    )
-    companies = _aggregate_companies(report_data.episodes)
-    report = _build_base_report(
-        report_data=report_data,
-        created_at=created_at,
-        total_key="total_episodes",
-        success_key="success_episodes",
-        failed_key="failed_episodes",
-    )
-    report["unique_company_count"] = len(companies)
-    report["companies"] = companies
-    _write_report_json(output_path, report)
-    return output_path
-
-
-def _aggregate_companies(episodes: list[dict]) -> list[dict]:
-    grouped: dict[str, dict] = {}
-    for episode in episodes:
-        if episode.get("status") != OUTPUT_STATUS_SUCCESS:
-            continue
-        episode_ref = {
-            "eid": episode.get("eid"),
-            "title": episode.get("title"),
-            "pub_date": episode.get("pub_date"),
-            "episode_url": episode.get("episode_url"),
-        }
-        for company in episode.get("companies", ()):
-            raw_name = company.get("name", "")
-            normalized_name = raw_name.strip()
-            if not normalized_name:
-                continue
-            entry = grouped.setdefault(
-                normalized_name,
-                {"name": normalized_name, "occurrence_count": 0, "episodes": []},
-            )
-            entry["occurrence_count"] += 1
-            entry["episodes"].append(
-                {**episode_ref, "evidence": company.get("evidence", "")}
-            )
-
-    return sorted(
-        grouped.values(),
-        key=lambda item: (-item["occurrence_count"], item["name"]),
-    )
-
-
-def _save_result_file(report_data: _PidReportData) -> str:
-    output_path, created_at = _build_output_file_details(
-        OUTPUT_FILE_TEMPLATE,
-        report_data.pid,
-    )
-    report = _build_base_report(
-        report_data=report_data,
-        created_at=created_at,
-        total_key="total",
-        success_key="success",
-        failed_key="failed",
-    )
-    report["episodes"] = report_data.episodes
-    _write_report_json(output_path, report)
-    return output_path
-
-
 def _print_xyz_success_payload(
     *,
     mobile_phone_number: str,
@@ -457,38 +412,6 @@ def _print_xyz_success_payload(
     if uid is not None:
         payload["uid"] = uid
     _print_json(payload, indent=2)
-
-
-def _build_output_file_details(template: str, pid: str) -> tuple[str, str]:
-    now = datetime.now(tz=timezone.utc)
-    timestamp_label = now.strftime("%Y%m%d_%H%M%S")
-    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return _build_output_path(template, pid, timestamp_label), created_at
-
-
-def _build_base_report(
-    *,
-    report_data: _PidReportData,
-    created_at: str,
-    total_key: str,
-    success_key: str,
-    failed_key: str,
-) -> dict[str, object]:
-    return {
-        "pid": report_data.pid,
-        "model": report_data.model,
-        "base_url": report_data.base_url,
-        "created_at": created_at,
-        total_key: report_data.total,
-        success_key: report_data.success,
-        failed_key: report_data.failed,
-    }
-
-
-def _write_report_json(path: str, payload: object) -> None:
-    with open(path, "w", encoding="utf-8") as file_obj:
-        json.dump(payload, file_obj, ensure_ascii=False, indent=2)
-        file_obj.write("\n")
 
 
 def _print_json(payload: object, *, indent: int | None = None) -> None:
