@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from base64 import b64encode
+import logging
 import math
 import os
+import time
 from dataclasses import dataclass
 from typing import Callable, Final, Literal, TypeVar
 
@@ -60,9 +62,16 @@ AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR: Final = (
     "音频识别仅支持 chat.completions API 风格。"
 )
 EMPTY_AUDIO_ERROR: Final = "待识别音频不能为空。"
+DEFAULT_LLM_OPERATION_NAME: Final = "LLM"
+LLM_RETRY_EXHAUSTED_ERROR_TEMPLATE: Final = (
+    "{operation_name}连续 {max_attempts} 次尝试失败，最后一次错误：{error_message}"
+)
 USER_ROLE: Final = "user"
 _NumericT = TypeVar("_NumericT", int, float)
+_RetryResultT = TypeVar("_RetryResultT")
 AudioFormat = Literal["wav", "mp3"]
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAiCompatibleConfigError(ValueError):
@@ -75,6 +84,27 @@ class OpenAiCompatibleLlmError(RuntimeError):
 
 class RetryableOpenAiCompatibleLlmError(OpenAiCompatibleLlmError):
     """Raised when the OpenAI-compatible request can be retried."""
+
+
+class LlmRetryExhaustedError(RuntimeError):
+    """Raised after an LLM operation exhausts all retry attempts."""
+
+    def __init__(
+        self,
+        *,
+        operation_name: str,
+        max_attempts: int,
+        last_error: Exception,
+    ) -> None:
+        self.max_attempts = max_attempts
+        self.last_error = last_error
+        super().__init__(
+            LLM_RETRY_EXHAUSTED_ERROR_TEMPLATE.format(
+                operation_name=operation_name,
+                max_attempts=max_attempts,
+                error_message=str(last_error),
+            )
+        )
 
 
 class EmptyLlmResponseError(RuntimeError):
@@ -104,6 +134,40 @@ class LlmRetryConfig:
             self.max_delay_seconds,
             self.base_delay_seconds,
         )
+
+
+DEFAULT_RETRYABLE_LLM_ERRORS: Final[tuple[type[Exception], ...]] = (
+    RetryableOpenAiCompatibleLlmError,
+)
+
+
+def execute_llm_with_retry(
+    operation: Callable[[], _RetryResultT],
+    *,
+    retry_config: LlmRetryConfig | None = None,
+    retryable_errors: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_LLM_ERRORS,
+    operation_name: str = DEFAULT_LLM_OPERATION_NAME,
+) -> tuple[_RetryResultT, int]:
+    effective_retry_config = retry_config or LlmRetryConfig()
+    for attempt in range(1, effective_retry_config.max_attempts + 1):
+        _log_llm_attempt(operation_name, attempt)
+        try:
+            return operation(), attempt
+        except retryable_errors as error:
+            if attempt == effective_retry_config.max_attempts:
+                raise LlmRetryExhaustedError(
+                    operation_name=operation_name,
+                    max_attempts=effective_retry_config.max_attempts,
+                    last_error=error,
+                ) from error
+            _wait_before_llm_retry(
+                operation_name=operation_name,
+                attempt=attempt,
+                error=error,
+                retry_config=effective_retry_config,
+            )
+
+    raise AssertionError("LLM 重试循环未返回结果。")
 
 
 class OpenAiCompatibleLlmClient:
@@ -380,6 +444,44 @@ def _is_retryable_openai_error(error: OpenAIError) -> bool:
     if status_code in RETRYABLE_STATUS_CODES:
         return True
     return isinstance(status_code, int) and 500 <= status_code <= 599
+
+
+def _log_llm_attempt(operation_name: str, attempt: int) -> None:
+    if attempt == 1:
+        logger.info("%s 调用中...", operation_name)
+        return
+    logger.info("%s 重试中...（第 %d 次）", operation_name, attempt)
+
+
+def _wait_before_llm_retry(
+    *,
+    operation_name: str,
+    attempt: int,
+    error: Exception,
+    retry_config: LlmRetryConfig,
+) -> None:
+    delay_seconds = _calculate_retry_delay(
+        attempt,
+        retry_config.base_delay_seconds,
+        retry_config.max_delay_seconds,
+    )
+    logger.debug(
+        "%s 第 %s 次尝试失败，将在 %.2f 秒后重试。错误：%s",
+        operation_name,
+        attempt,
+        delay_seconds,
+        error,
+    )
+    time.sleep(delay_seconds)
+
+
+def _calculate_retry_delay(
+    attempt: int,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+) -> float:
+    retry_delay_seconds = base_delay_seconds * (2 ** (attempt - 1))
+    return min(retry_delay_seconds, max_delay_seconds)
 
 
 def _normalize_response_text(response_text: str | None) -> str:

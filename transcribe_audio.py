@@ -11,6 +11,7 @@ from openai_compatible_llm import (
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmClient,
     OpenAiCompatibleLlmError,
+    load_llm_retry_config_from_env,
     load_openai_compatible_config_from_env,
 )
 from logging_config import configure_logging
@@ -39,6 +40,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_argument_parser().parse_args(argv)
     try:
         config = load_openai_compatible_config_from_env()
+        retry_config = load_llm_retry_config_from_env()
         exported_segments = detect_and_export_speech_segments(
             args.audio_path,
             output_dir=args.output_dir,
@@ -52,6 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = transcribe_speech_segments(
             selected_segments,
             llm_client=OpenAiCompatibleLlmClient(config),
+            retry_config=retry_config,
         )
     except (
         AudioFileDecodeError,

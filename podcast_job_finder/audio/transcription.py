@@ -5,7 +5,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final, Protocol, Sequence
 
-from openai_compatible_llm import AudioFormat
+from openai_compatible_llm import (
+    AudioFormat,
+    EmptyLlmResponseError,
+    LlmRetryConfig,
+    LlmRetryExhaustedError,
+    RetryableOpenAiCompatibleLlmError,
+    execute_llm_with_retry,
+)
 from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
 
 
@@ -26,6 +33,14 @@ TRANSCRIPTION_PROMPT_TEMPLATE: Final = """你是专业的中文音频转写助�
 4. 无法确认的内容保留原始发音，不要编造。
 """
 READ_AUDIO_ERROR_TEMPLATE: Final = "无法读取待识别音频：{path}，{error_message}"
+TRANSCRIPTION_OPERATION_NAME_TEMPLATE: Final = "音频片段 {index} 转写"
+TRANSCRIPTION_RETRY_EXHAUSTED_TEMPLATE: Final = (
+    "音频片段 {index} 连续 {max_attempts} 次转写失败，最后一次错误：{error_message}"
+)
+TRANSCRIPTION_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    RetryableOpenAiCompatibleLlmError,
+    EmptyLlmResponseError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +91,7 @@ def transcribe_speech_segments(
     segments: Sequence[ExportedSpeechSegment],
     *,
     llm_client: AudioTranscriptionClientProtocol,
+    retry_config: LlmRetryConfig | None = None,
 ) -> AudioTranscriptionResult:
     transcribed_segments: list[TranscribedSpeechSegment] = []
     previous_text = ""
@@ -86,10 +102,11 @@ def transcribe_speech_segments(
             segment.segment.start_ms,
             segment.segment.end_ms,
         )
-        text = llm_client.transcribe_audio(
-            _read_audio(segment.file_path),
-            audio_format=WAV_AUDIO_FORMAT,
-            prompt=_build_transcription_prompt(previous_text),
+        text = _transcribe_speech_segment(
+            segment,
+            llm_client=llm_client,
+            previous_text=previous_text,
+            retry_config=retry_config,
         )
         transcribed_segments.append(
             TranscribedSpeechSegment(
@@ -101,6 +118,39 @@ def transcribe_speech_segments(
         )
         previous_text = text
     return AudioTranscriptionResult(segments=transcribed_segments)
+
+
+def _transcribe_speech_segment(
+    segment: ExportedSpeechSegment,
+    *,
+    llm_client: AudioTranscriptionClientProtocol,
+    previous_text: str,
+    retry_config: LlmRetryConfig | None,
+) -> str:
+    audio_data = _read_audio(segment.file_path)
+    prompt = _build_transcription_prompt(previous_text)
+    try:
+        text, _ = execute_llm_with_retry(
+            lambda: llm_client.transcribe_audio(
+                audio_data,
+                audio_format=WAV_AUDIO_FORMAT,
+                prompt=prompt,
+            ),
+            retry_config=retry_config,
+            retryable_errors=TRANSCRIPTION_RETRYABLE_ERRORS,
+            operation_name=TRANSCRIPTION_OPERATION_NAME_TEMPLATE.format(
+                index=segment.index
+            ),
+        )
+        return text
+    except LlmRetryExhaustedError as error:
+        raise AudioTranscriptionError(
+            TRANSCRIPTION_RETRY_EXHAUSTED_TEMPLATE.format(
+                index=segment.index,
+                max_attempts=error.max_attempts,
+                error_message=str(error.last_error),
+            )
+        ) from error
 
 
 def _build_transcription_prompt(previous_text: str) -> str:

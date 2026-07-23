@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from dataclasses import asdict, dataclass, field
-from typing import Collection, Protocol
+from typing import Collection, Final, Protocol
 
 from openai_compatible_llm import (
     EmptyLlmResponseError,
     LlmRetryConfig,
+    LlmRetryExhaustedError,
     OpenAiCompatibleLlmError,
     RetryableOpenAiCompatibleLlmError,
+    execute_llm_with_retry,
 )
 from podcast_job_finder.xiaoyuzhou.episode_page import CommentInfo, EpisodeInfo
 
@@ -71,6 +72,13 @@ logger = logging.getLogger(__name__)
 
 class CompanyExtractionError(ValueError):
     """Raised when the company extraction result is invalid."""
+
+
+COMPANY_EXTRACTION_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    RetryableOpenAiCompatibleLlmError,
+    EmptyLlmResponseError,
+    CompanyExtractionError,
+)
 
 
 class LlmClientProtocol(Protocol):
@@ -210,81 +218,72 @@ def run_company_extraction_from_prompt(
     company_blacklist: Collection[str] | None = None,
     retry_config: LlmRetryConfig | None = None,
 ) -> CompanyExtractionAttempt:
-    effective_retry_config = retry_config or LlmRetryConfig()
-    last_error: Exception | None = None
-    last_failure_category = INVALID_RESULT_CATEGORY
     last_response_text: str | None = None
-    for attempt in range(1, effective_retry_config.max_attempts + 1):
-        try:
-            if attempt == 1:
-                logger.info("LLM 调用中...")
-            else:
-                logger.info("LLM 重试中...（第 %d 次）", attempt)
-            response_text = llm_client.generate(prompt)
-            last_response_text = response_text
-            extraction_result = parse_company_extraction_output(
-                response_text,
-                company_blacklist=company_blacklist,
-            )
-            company_names = [c.name for c in extraction_result.companies]
-            logger.info(
-                "LLM 返回结果：%d 家公司 %s",
-                len(extraction_result.companies),
-                company_names,
-            )
-            if attempt > 1:
-                logger.debug("LLM 第 %s 次尝试成功。", attempt)
-            return CompanyExtractionAttempt(
-                response_text=response_text,
-                extraction_result=extraction_result,
-            )
-        except RetryableOpenAiCompatibleLlmError as error:
-            last_error = error
-            last_failure_category = REQUEST_FAILURE_CATEGORY
-            last_response_text = None
-        except (EmptyLlmResponseError, CompanyExtractionError) as error:
-            last_error = error
-            last_failure_category = INVALID_RESULT_CATEGORY
-            if isinstance(error, EmptyLlmResponseError):
-                last_response_text = None
-        except OpenAiCompatibleLlmError as error:
-            # Deterministic request failures such as auth, model, or parameter issues
-            # should fail fast because repeating the same request will not recover.
-            return CompanyExtractionAttempt(
-                response_text=None,
-                error=error,
-            )
 
-        if attempt == effective_retry_config.max_attempts:
-            break
-
-        delay_seconds = _calculate_retry_delay(
-            attempt,
-            effective_retry_config.base_delay_seconds,
-            effective_retry_config.max_delay_seconds,
+    def request_company_extraction() -> CompanyExtractionAttempt:
+        nonlocal last_response_text
+        last_response_text = None
+        response_text = llm_client.generate(prompt)
+        last_response_text = response_text
+        extraction_result = parse_company_extraction_output(
+            response_text,
+            company_blacklist=company_blacklist,
         )
-        logger.debug(
-            "LLM 第 %s 次尝试失败，将在 %.2f 秒后重试。错误：%s",
-            attempt,
-            delay_seconds,
-            last_error,
-        )
-        time.sleep(delay_seconds)
-
-    if last_error is None:
         return CompanyExtractionAttempt(
-            response_text=last_response_text,
-            error=CompanyExtractionError(INVALID_RESPONSE_ERROR),
+            response_text=response_text,
+            extraction_result=extraction_result,
         )
 
+    try:
+        result, attempt = execute_llm_with_retry(
+            request_company_extraction,
+            retry_config=retry_config,
+            retryable_errors=COMPANY_EXTRACTION_RETRYABLE_ERRORS,
+        )
+    except LlmRetryExhaustedError as error:
+        return _build_failed_company_extraction_attempt(last_response_text, error)
+    except OpenAiCompatibleLlmError as error:
+        return CompanyExtractionAttempt(error=error)
+
+    _log_company_extraction_result(result, attempt)
+    return result
+
+
+def _build_failed_company_extraction_attempt(
+    last_response_text: str | None,
+    retry_error: LlmRetryExhaustedError,
+) -> CompanyExtractionAttempt:
+    last_error = retry_error.last_error
+    failure_category = (
+        REQUEST_FAILURE_CATEGORY
+        if isinstance(last_error, RetryableOpenAiCompatibleLlmError)
+        else INVALID_RESULT_CATEGORY
+    )
     return CompanyExtractionAttempt(
         response_text=last_response_text,
         error=_build_retry_exhausted_error(
-            max_attempts=effective_retry_config.max_attempts,
-            failure_category=last_failure_category,
+            max_attempts=retry_error.max_attempts,
+            failure_category=failure_category,
             last_error=last_error,
         ),
     )
+
+
+def _log_company_extraction_result(
+    result: CompanyExtractionAttempt,
+    attempt: int,
+) -> None:
+    extraction_result = result.extraction_result
+    if extraction_result is None:
+        return
+    company_names = [company.name for company in extraction_result.companies]
+    logger.info(
+        "LLM 返回结果：%d 家公司 %s",
+        len(extraction_result.companies),
+        company_names,
+    )
+    if attempt > 1:
+        logger.debug("LLM 第 %s 次尝试成功。", attempt)
 
 
 def _comment_to_input_lines(
@@ -345,15 +344,6 @@ def _strip_json_code_block(response_text: str) -> str:
     if matched_block is None:
         return response_text
     return matched_block.group(1)
-
-
-def _calculate_retry_delay(
-    attempt: int,
-    base_delay_seconds: float,
-    max_delay_seconds: float,
-) -> float:
-    retry_delay_seconds = base_delay_seconds * (2 ** (attempt - 1))
-    return min(retry_delay_seconds, max_delay_seconds)
 
 
 def _build_retry_exhausted_error(
