@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Final
 
@@ -13,6 +14,7 @@ from podcast_job_finder.audio._segment_split import (
     split_long_segments,
 )
 from podcast_job_finder.audio.normalized_audio import NormalizedAudio
+from podcast_job_finder.progress import PercentageProgressLogger
 
 
 # 检测前统一使用的音频采样率。16000 表示每秒读取 16000 个声音数据点。
@@ -23,6 +25,7 @@ VAD_SAMPLE_RATE: Final = 16_000
 # 数值越小反应越快，数值越大判断范围越长；TEN VAD 推荐保持 256。
 VAD_FRAME_SAMPLES: Final = 256
 VAD_FRAME_DURATION_MS: Final = VAD_FRAME_SAMPLES / VAD_SAMPLE_RATE * 1_000
+VAD_DETECTION_OPERATION_NAME: Final = "逐帧语音检测"
 
 # 整段音频的平均音量高于这个值时，通常包含较响的背景声。
 # 此时会提高判断标准，减少把背景声当成人声的情况。
@@ -49,6 +52,8 @@ MIN_ADAPTIVE_THRESHOLD: Final = 0.2
 
 # 自动提高判断标准时允许达到的最高值，避免漏掉大部分正常说话声。
 MAX_ADAPTIVE_THRESHOLD: Final = 0.9
+
+logger = logging.getLogger(__name__)
 
 
 def _milliseconds_to_frames(duration_ms: int, frame_duration_ms: float) -> int:
@@ -171,6 +176,11 @@ def _detect_speech_segments(
     """从规范化 WAV 中流式检测说话片段。"""
     # 少于一个完整判断单位的声音无法识别人声，主要处理空音频或异常短输入。
     if audio.sample_count < VAD_FRAME_SAMPLES:
+        logger.debug(
+            "音频不足一个 VAD 帧：sample_count=%d required_samples=%d",
+            audio.sample_count,
+            VAD_FRAME_SAMPLES,
+        )
         return []
 
     # 计算每个小段代表多少毫秒，供时间配置和最终结果换算使用。
@@ -188,6 +198,7 @@ def _detect_speech_segments(
             frame_duration_ms,
         ),
     )
+    logger.debug("自然停顿分段完成：segment_count=%d", len(raw_segments))
 
     # 第三步：把时间太短的内容并入相邻片段，减少零碎片段。
     merged_segments = _merge_short_segments(
@@ -197,6 +208,7 @@ def _detect_speech_segments(
             frame_duration_ms,
         ),
     )
+    logger.debug("短片段合并完成：segment_count=%d", len(merged_segments))
 
     # 第四步：把时间太长的内容优先从停顿处切开，控制单个片段长度。
     max_speech_frames = _milliseconds_to_frames(
@@ -217,6 +229,7 @@ def _detect_speech_segments(
             frame_samples=VAD_FRAME_SAMPLES,
         ),
     )
+    logger.debug("长片段切分完成：segment_count=%d", len(split_segments))
 
     # 第五步：把内部使用的帧位置转换成精确的采样位置。
     return _convert_to_segments(split_segments)
@@ -241,8 +254,22 @@ def _classify_speech_frames(
         configured_threshold,
         sample_count=frame_count * VAD_FRAME_SAMPLES,
     )
+    logger.debug(
+        "开始%s：frame_count=%d frame_duration_ms=%.1f "
+        "configured_threshold=%.2f effective_threshold=%.2f",
+        VAD_DETECTION_OPERATION_NAME,
+        frame_count,
+        VAD_FRAME_DURATION_MS,
+        configured_threshold,
+        threshold,
+    )
     vad = TenVad(VAD_FRAME_SAMPLES, threshold)
     speech_frames = np.zeros(frame_count, dtype=np.bool_)
+    progress_logger = PercentageProgressLogger(
+        logger=logger,
+        operation_name=VAD_DETECTION_OPERATION_NAME,
+        total_items=frame_count,
+    )
 
     # 按播放顺序检查每个小段，并记下这一小段里是否有人说话。
     frames = audio.iter_samples(chunk_samples=VAD_FRAME_SAMPLES)
@@ -251,6 +278,16 @@ def _classify_speech_frames(
             break
         _, is_speech = vad.process(frame)
         speech_frames[frame_index] = is_speech == 1
+        progress_logger.update(frame_index + 1)
+
+    speech_frame_count = int(np.count_nonzero(speech_frames))
+    logger.debug(
+        "%s完成：speech_frames=%d total_frames=%d speech_ratio=%.1f%%",
+        VAD_DETECTION_OPERATION_NAME,
+        speech_frame_count,
+        frame_count,
+        speech_frame_count / frame_count * 100,
+    )
     return speech_frames
 
 

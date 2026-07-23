@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ OUTPUT_DIR_ERROR: Final = "无法创建音频片段目录：{path}，{error_mess
 EXISTING_SEGMENT_ERROR: Final = "音频片段文件已经存在：{path}"
 EXPORT_SEGMENT_ERROR: Final = "无法导出音频片段：{path}，{error_message}"
 EMPTY_SEGMENT_ERROR: Final = "导出的音频片段没有声音数据：{path}"
+
+logger = logging.getLogger(__name__)
 
 
 class AudioSegmentExportError(RuntimeError):
@@ -86,6 +89,13 @@ def _export_speech_segments(
             target_path=exported_segment.file_path,
             silence=silence,
             overwrite=overwrite,
+        )
+        logger.debug(
+            "音频片段已导出：index=%d start_ms=%d end_ms=%d file_path=%s",
+            exported_segment.index,
+            segment.start_ms,
+            segment.end_ms,
+            exported_segment.file_path,
         )
     return exported_segments
 
