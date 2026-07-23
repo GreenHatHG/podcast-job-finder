@@ -1,4 +1,5 @@
 """分布式追踪支持：提供上下文 trace_id 及日志过滤器。"""
+
 from __future__ import annotations
 
 import contextvars

@@ -21,6 +21,7 @@ from episode_company_runner import (
     build_runtime_signature,
     run_episode_company_extraction,
 )
+from logging_config import configure_logging
 from llm_checkpoint_store import LlmCheckpointStore
 from openai_compatible_llm import (
     EmptyLlmResponseError,
@@ -30,7 +31,6 @@ from openai_compatible_llm import (
     load_openai_compatible_config_from_env,
     load_llm_retry_config_from_env,
 )
-from tracing import TraceIdFormatter
 from podcast_job_finder.xiaoyuzhou.episode_page import EpisodeParseError
 from xiaoyuzhou_auth_store import (
     XiaoyuzhouAuthSession,
@@ -61,8 +61,6 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         f"      {PROGRAM_NAME} pid --pid <pid> [--all]",
     ]
 )
-LOG_LEVEL_ENV: Final = "LOG_LEVEL"
-DEFAULT_LOG_LEVEL_NAME: Final = "INFO"
 COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"
 COMPANY_BLACKLIST_SEPARATOR_PATTERN = re.compile(r"[\n,，]+")
 
@@ -110,7 +108,7 @@ class _PidReportData:
 
 def main() -> int:
     raw_args = sys.argv[1:]
-    _configure_logging()
+    configure_logging()
     if not raw_args:
         print(COMMAND_USAGE_TEXT, file=sys.stderr)
         return 1
@@ -137,35 +135,6 @@ def main() -> int:
     ) as error:
         print(str(error), file=sys.stderr)
         return 1
-
-
-def _configure_logging() -> None:
-    # 清空已有的 Handler，避免重复
-    root_logger = logging.getLogger()
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
-    root_logger.setLevel(_resolve_log_level())
-
-    # 创建 Handler 并使用 TraceIdFormatter
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        TraceIdFormatter(
-            "%(asctime)s %(levelname)s %(name)s [trace_id=%(trace_id)s]: %(message)s"
-        )
-    )
-    root_logger.addHandler(handler)
-
-
-def _resolve_log_level() -> int:
-    raw_log_level = os.getenv(LOG_LEVEL_ENV, DEFAULT_LOG_LEVEL_NAME)
-    normalized_log_level = raw_log_level.strip().upper()
-    if not normalized_log_level:
-        normalized_log_level = DEFAULT_LOG_LEVEL_NAME
-
-    resolved_log_level = getattr(logging, normalized_log_level, None)
-    if not isinstance(resolved_log_level, int):
-        return logging.WARNING
-    return resolved_log_level
 
 
 def _load_company_blacklist() -> tuple[str, ...]:
