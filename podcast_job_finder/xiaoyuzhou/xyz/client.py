@@ -1,14 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from http import HTTPStatus
-import json
 import logging
 from typing import Any, Final, NoReturn
 
 import requests
 
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
+from podcast_job_finder.xiaoyuzhou.xyz import debug
+from podcast_job_finder.xiaoyuzhou.xyz.models import (
+    EpisodeListPage,
+    EpisodeLoadMoreKey,
+    LoginResult,
+    PodcastEpisodeSummary,
+    RefreshedTokens,
+)
 
 
 DEFAULT_XYZ_BASE_URL: Final = "http://localhost:23020"
@@ -34,24 +40,8 @@ INVALID_JSON_DETAIL_TEMPLATE: Final = (
 UNEXPECTED_FIELD_DETAIL_TEMPLATE: Final = (
     "字段 {field_name} 需要 {expected_description}，实际值 {actual_value}"
 )
-DEBUG_REQUEST_TEMPLATE: Final = "xyz 请求 path=%s payload=%s"
-DEBUG_RESPONSE_TEMPLATE: Final = "xyz 响应 path=%s status=%s body=%s"
-DEBUG_PARSE_FAILURE_TEMPLATE: Final = (
-    "xyz 响应无法解析为 JSON path=%s status=%s body=%s"
-)
 DEBUG_UNEXPECTED_RESPONSE_TEMPLATE: Final = (
     "xyz 响应字段异常 path=%s field=%s payload=%s"
-)
-DEBUG_TEXT_TRUNCATION_SUFFIX: Final = "...<truncated>"
-MAX_DEBUG_TEXT_LENGTH: Final = 4000
-MASKED_VALUE: Final = "***"
-SENSITIVE_FIELD_NAMES: Final = frozenset(
-    {
-        "mobilePhoneNumber",
-        "verifyCode",
-        "x-jike-access-token",
-        "x-jike-refresh-token",
-    }
 )
 
 
@@ -64,40 +54,6 @@ class XyzClientError(RuntimeError):
 
 class XyzUnauthorizedError(XyzClientError):
     """Raised when the local xyz service reports an expired auth session."""
-
-
-@dataclass(slots=True, frozen=True)
-class LoginResult:
-    uid: str
-    access_token: str
-    refresh_token: str
-
-
-@dataclass(slots=True, frozen=True)
-class RefreshedTokens:
-    access_token: str
-    refresh_token: str
-
-
-@dataclass(slots=True, frozen=True)
-class EpisodeLoadMoreKey:
-    pub_date: str
-    id: str
-    direction: str
-
-
-@dataclass(slots=True, frozen=True)
-class PodcastEpisodeSummary:
-    pid: str
-    eid: str
-    title: str
-    pub_date: str
-
-
-@dataclass(slots=True, frozen=True)
-class EpisodeListPage:
-    episodes: tuple[PodcastEpisodeSummary, ...]
-    load_more_key: EpisodeLoadMoreKey | None
 
 
 class XyzClient:
@@ -246,7 +202,7 @@ class XyzClient:
         if access_token is not None:
             request_headers[ACCESS_TOKEN_HEADER_NAME] = access_token
 
-        self._debug_log_request(path=path, payload=payload)
+        debug.log_request(logger, path=path, payload=payload)
         try:
             response = self._session.post(
                 f"{self._base_url}{path}",
@@ -285,8 +241,9 @@ class XyzClient:
         try:
             payload = response.json()
         except ValueError as error:
-            response_body = self._truncate_debug_text(response.text)
-            self._debug_log_parse_failure(
+            response_body = debug.truncate_text(response.text)
+            debug.log_parse_failure(
+                logger,
                 path=path,
                 status_code=response.status_code,
                 response_text=response_body,
@@ -300,7 +257,8 @@ class XyzClient:
                 cause=error,
             )
 
-        self._debug_log_response(
+        debug.log_response(
+            logger,
             path=path,
             status_code=response.status_code,
             payload=payload,
@@ -457,13 +415,13 @@ class XyzClient:
         detail = UNEXPECTED_FIELD_DETAIL_TEMPLATE.format(
             field_name=field_name,
             expected_description=expected_description,
-            actual_value=self._format_debug_payload(payload),
+            actual_value=debug.format_payload(payload),
         )
         logger.debug(
             DEBUG_UNEXPECTED_RESPONSE_TEMPLATE,
             path,
             field_name,
-            self._format_debug_payload(payload),
+            debug.format_payload(payload),
         )
         self._raise_response_format_error(path=path, detail=detail)
 
@@ -480,77 +438,3 @@ class XyzClient:
         if cause is not None:
             raise error from cause
         raise error
-
-    def _debug_log_request(self, *, path: str, payload: dict[str, Any]) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
-            return
-        logger.debug(
-            DEBUG_REQUEST_TEMPLATE,
-            path,
-            self._format_debug_payload(payload),
-        )
-
-    def _debug_log_response(
-        self,
-        *,
-        path: str,
-        status_code: int,
-        payload: object,
-    ) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
-            return
-        logger.debug(
-            DEBUG_RESPONSE_TEMPLATE,
-            path,
-            status_code,
-            self._format_debug_payload(payload),
-        )
-
-    def _debug_log_parse_failure(
-        self,
-        *,
-        path: str,
-        status_code: int,
-        response_text: str,
-    ) -> None:
-        if not logger.isEnabledFor(logging.DEBUG):
-            return
-        logger.debug(
-            DEBUG_PARSE_FAILURE_TEMPLATE,
-            path,
-            status_code,
-            self._truncate_debug_text(response_text),
-        )
-
-    def _format_debug_payload(self, payload: object) -> str:
-        sanitized_payload = self._sanitize_debug_value(payload)
-        try:
-            serialized_payload = json.dumps(
-                sanitized_payload,
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        except TypeError:
-            serialized_payload = repr(sanitized_payload)
-        return self._truncate_debug_text(serialized_payload)
-
-    def _sanitize_debug_value(self, value: object) -> object:
-        if isinstance(value, dict):
-            sanitized_payload: dict[object, object] = {}
-            for key, item in value.items():
-                if isinstance(key, str) and key in SENSITIVE_FIELD_NAMES:
-                    sanitized_payload[key] = MASKED_VALUE
-                    continue
-                sanitized_payload[key] = self._sanitize_debug_value(item)
-            return sanitized_payload
-        if isinstance(value, list):
-            return [self._sanitize_debug_value(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._sanitize_debug_value(item) for item in value]
-        return value
-
-    def _truncate_debug_text(self, text: str) -> str:
-        if len(text) <= MAX_DEBUG_TEXT_LENGTH:
-            return text
-        truncated_length = MAX_DEBUG_TEXT_LENGTH - len(DEBUG_TEXT_TRUNCATION_SUFFIX)
-        return f"{text[:truncated_length]}{DEBUG_TEXT_TRUNCATION_SUFFIX}"

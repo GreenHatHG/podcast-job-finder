@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Final, Protocol, Sequence
 
-from openai_compatible_llm import (
+from podcast_job_finder.llm import (
     AudioFormat,
     EmptyLlmResponseError,
     LlmRetryConfig,

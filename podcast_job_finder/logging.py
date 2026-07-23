@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Final
 
-from tracing import TraceIdFormatter
+from podcast_job_finder.tracing import TraceIdFormatter
 
 
 LOG_LEVEL_ENV: Final = "LOG_LEVEL"

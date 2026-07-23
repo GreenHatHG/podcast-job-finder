@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 from typing import Final, Sequence
 
-from podcast_job_finder.xiaoyuzhou.episode_audio import (
+from podcast_job_finder.xiaoyuzhou.episode_audio.service import (
     DEFAULT_AUDIO_OUTPUT_DIR,
     EpisodeAudioDownloadError,
     download_episode_audio,
 )
 
 
-PROGRAM_NAME: Final = "python -m podcast_job_finder.xiaoyuzhou.download_audio"
+PROGRAM_NAME: Final = "podcast-download-audio"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

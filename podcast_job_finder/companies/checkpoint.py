@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from company_extraction import CompanyExtractionResult
+from podcast_job_finder.companies.models import CompanyExtractionResult
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
     atomic_write_text,

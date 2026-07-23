@@ -7,8 +7,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Final, Iterator
 
-from podcast_job_finder.xiaoyuzhou._audio_errors import EpisodeAudioDownloadError
-from podcast_job_finder.xiaoyuzhou._audio_http import download_audio_content
+from podcast_job_finder.xiaoyuzhou.episode_audio.errors import (
+    EpisodeAudioDownloadError,
+)
+from podcast_job_finder.xiaoyuzhou.episode_audio.http import download_audio_content
 
 
 SOURCE_FILE_STEM: Final = "source"

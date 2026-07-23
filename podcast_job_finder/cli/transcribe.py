@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
-from openai_compatible_llm import (
+from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmClient,
@@ -14,7 +14,7 @@ from openai_compatible_llm import (
     load_llm_retry_config_from_env,
     load_openai_compatible_config_from_env,
 )
-from logging_config import configure_logging
+from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
@@ -26,7 +26,7 @@ from podcast_job_finder.audio.transcription import (
 )
 
 
-PROGRAM_NAME: Final = "python transcribe_audio.py"
+PROGRAM_NAME: Final = "podcast-transcribe"
 DEFAULT_SEGMENT_OUTPUT_DIR: Final = Path("output/transcription_segments")
 INVALID_MAX_SEGMENTS_ERROR: Final = "max_segments 必须大于 0。"
 

@@ -3,10 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field
 from typing import Collection, Final, Protocol
 
-from openai_compatible_llm import (
+from podcast_job_finder.companies.models import (
+    COMPANIES_FIELD,
+    INVALID_COMPANIES_FIELD_ERROR,
+    INVALID_TOP_LEVEL_ERROR,
+    CompanyExtractionAttempt,
+    CompanyExtractionError,
+    CompanyExtractionResult,
+    CompanyMention,
+)
+from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     LlmRetryConfig,
     LlmRetryExhaustedError,
@@ -14,7 +22,7 @@ from openai_compatible_llm import (
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
-from podcast_job_finder.xiaoyuzhou.episode_page import CommentInfo, EpisodeInfo
+from podcast_job_finder.xiaoyuzhou.models import CommentInfo, EpisodeInfo
 
 
 TITLE_SECTION_LABEL = "标题"
@@ -48,15 +56,7 @@ PROMPT_TEMPLATE = """你是一个信息抽取助手。
 待处理文本：
 {episode_text}
 """
-COMPANIES_FIELD = "companies"
-NAME_FIELD = "name"
-EVIDENCE_FIELD = "evidence"
 INVALID_RESPONSE_ERROR = "LLM 返回结果不是合法 JSON。"
-INVALID_TOP_LEVEL_ERROR = "LLM 返回结果的顶层结构必须是对象。"
-INVALID_COMPANIES_FIELD_ERROR = "LLM 返回结果缺少 companies 数组。"
-INVALID_COMPANY_ITEM_ERROR = "LLM 返回结果中的公司项必须是对象。"
-MISSING_COMPANY_FIELD_ERROR = "LLM 返回结果中的公司项缺少必要字段。"
-EMPTY_COMPANY_FIELD_ERROR = "LLM 返回结果中的公司项字段不能为空。"
 LLM_REQUEST_RETRY_EXHAUSTED_TEMPLATE = (
     "LLM 调用连续 {max_attempts} 次失败，最后一次错误：{error_message}"
 )
@@ -70,10 +70,6 @@ INVALID_RESULT_CATEGORY = "invalid_result"
 logger = logging.getLogger(__name__)
 
 
-class CompanyExtractionError(ValueError):
-    """Raised when the company extraction result is invalid."""
-
-
 COMPANY_EXTRACTION_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
     RetryableOpenAiCompatibleLlmError,
     EmptyLlmResponseError,
@@ -85,58 +81,6 @@ class LlmClientProtocol(Protocol):
     def generate(self, prompt: str) -> str:
         """Generates a text response for the provided prompt."""
         ...
-
-
-@dataclass(slots=True)
-class CompanyMention:
-    name: str
-    evidence: str
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, payload: object) -> "CompanyMention":
-        if not isinstance(payload, dict):
-            raise ValueError(INVALID_COMPANY_ITEM_ERROR)
-        return _parse_company_item(payload)
-
-
-@dataclass(slots=True)
-class CompanyExtractionResult:
-    companies: list[CompanyMention] = field(default_factory=list)
-    filtered_count: int = 0
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, payload: object) -> "CompanyExtractionResult":
-        if not isinstance(payload, dict):
-            raise ValueError(INVALID_TOP_LEVEL_ERROR)
-
-        companies_data = payload.get(COMPANIES_FIELD, [])
-        if not isinstance(companies_data, list):
-            raise ValueError(INVALID_COMPANIES_FIELD_ERROR)
-
-        filtered_count = payload.get("filtered_count", 0)
-        if not isinstance(filtered_count, int):
-            raise ValueError("filtered_count 必须是整数。")
-
-        return cls(
-            companies=[
-                CompanyMention.from_dict(company_data)
-                for company_data in companies_data
-            ],
-            filtered_count=filtered_count,
-        )
-
-
-@dataclass(slots=True)
-class CompanyExtractionAttempt:
-    response_text: str | None = None
-    extraction_result: CompanyExtractionResult | None = None
-    error: Exception | None = None
 
 
 def build_company_extraction_input(episode: EpisodeInfo) -> str:
@@ -190,7 +134,7 @@ def parse_company_extraction_output(
     companies: list[CompanyMention] = []
     filtered_count = 0
     for company_data in companies_data:
-        company = _parse_company_item(company_data)
+        company = CompanyMention.from_dict(company_data)
         normalized_name = _normalize_company_name(company.name)
         if normalized_name in seen_company_names:
             continue
@@ -305,21 +249,6 @@ def _comment_to_input_lines(
         reply_label = f"{index_label}.{reply_index}"
         lines.extend(_comment_to_input_lines(reply, reply_label, depth + 1))
     return lines
-
-
-def _parse_company_item(company_data: object) -> CompanyMention:
-    if not isinstance(company_data, dict):
-        raise CompanyExtractionError(INVALID_COMPANY_ITEM_ERROR)
-
-    if NAME_FIELD not in company_data or EVIDENCE_FIELD not in company_data:
-        raise CompanyExtractionError(MISSING_COMPANY_FIELD_ERROR)
-
-    name = str(company_data[NAME_FIELD]).strip()
-    evidence = str(company_data[EVIDENCE_FIELD]).strip()
-    if not name or not evidence:
-        raise CompanyExtractionError(EMPTY_COMPANY_FIELD_ERROR)
-
-    return CompanyMention(name=name, evidence=evidence)
 
 
 def _normalize_company_blacklist(

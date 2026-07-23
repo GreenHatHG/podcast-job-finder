@@ -10,7 +10,7 @@ from podcast_job_finder.filesystem import OWNER_READ_WRITE_MODE, atomic_write_te
 
 
 AUTH_SESSION_FILE_NAME: Final = ".xiaoyuzhou_auth.json"
-AUTH_SESSION_PATH: Final = Path(__file__).resolve().parent / AUTH_SESSION_FILE_NAME
+AUTH_SESSION_PATH: Final = Path.cwd() / AUTH_SESSION_FILE_NAME
 AUTH_SESSION_MISSING_ERROR_TEMPLATE: Final = (
     "未找到小宇宙登录态文件：{file_name}。请先执行 send-code 和 login。"
 )

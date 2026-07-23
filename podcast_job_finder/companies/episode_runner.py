@@ -5,15 +5,17 @@ import json
 import logging
 from dataclasses import dataclass
 
-from company_extraction import (
-    CompanyExtractionResult,
+from podcast_job_finder.companies.extraction import (
     LlmClientProtocol,
     build_company_extraction_input,
     build_company_extraction_prompt,
     get_company_extraction_prompt_template,
     run_company_extraction_from_prompt,
 )
-from llm_checkpoint_store import (
+from podcast_job_finder.companies.models import (
+    CompanyExtractionResult,
+)
+from podcast_job_finder.companies.checkpoint import (
     STATUS_FAILED,
     STATUS_PREPARED,
     STATUS_SUCCESS,
@@ -21,8 +23,8 @@ from llm_checkpoint_store import (
     LlmCheckpointSavePayload,
     LlmCheckpointStore,
 )
-from openai_compatible_llm import LlmRetryConfig
-from podcast_job_finder.xiaoyuzhou.episode_page import (
+from podcast_job_finder.llm import LlmRetryConfig
+from podcast_job_finder.xiaoyuzhou.episode_client import (
     extract_episode_id_from_url,
     parse_episode_url,
 )

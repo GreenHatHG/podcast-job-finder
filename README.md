@@ -80,7 +80,7 @@ set +a
 ### 提取单集中的公司
 
 ```bash
-uv run python extract_episode_companies.py \
+uv run podcast-find-jobs \
   "https://www.xiaoyuzhoufm.com/episode/<eid>"
 ```
 
@@ -105,7 +105,7 @@ uv run python extract_episode_companies.py \
 这条命令只解析并输出节目标题、正文、评论和音频地址，不调用大语言模型：
 
 ```bash
-uv run python extract_xiaoyuzhou_episode.py \
+uv run podcast-inspect-episode \
   "https://www.xiaoyuzhoufm.com/episode/<eid>"
 ```
 
@@ -114,11 +114,11 @@ uv run python extract_xiaoyuzhou_episode.py \
 批量模式需要本地 `xyz` 服务运行在 `http://localhost:23020`。先获取验证码并登录：
 
 ```bash
-uv run python extract_episode_companies.py send-code \
+uv run podcast-find-jobs send-code \
   --mobile <手机号> \
   --area-code +86
 
-uv run python extract_episode_companies.py login \
+uv run podcast-find-jobs login \
   --mobile <手机号> \
   --code <验证码> \
   --area-code +86
@@ -127,13 +127,13 @@ uv run python extract_episode_companies.py login \
 登录成功后，凭据保存在项目根目录的 `.xiaoyuzhou_auth.json`，文件权限为仅当前用户可读写。处理播客最新一页的节目：
 
 ```bash
-uv run python extract_episode_companies.py pid --pid <pid>
+uv run podcast-find-jobs pid --pid <pid>
 ```
 
 加入 `--all` 可抓取全部分页：
 
 ```bash
-uv run python extract_episode_companies.py pid --pid <pid> --all
+uv run podcast-find-jobs pid --pid <pid> --all
 ```
 
 批量处理完成后会在 `output/` 生成两个文件：
@@ -146,7 +146,7 @@ uv run python extract_episode_companies.py pid --pid <pid> --all
 ### 下载单集音频
 
 ```bash
-uv run python -m podcast_job_finder.xiaoyuzhou.download_audio \
+uv run podcast-download-audio \
   "https://www.xiaoyuzhoufm.com/episode/<eid>"
 ```
 
@@ -198,19 +198,12 @@ output/
 
 ```text
 podcast_job_finder/
-├── audio/                  # 音频规范化、VAD 检测与片段导出
+├── audio/                  # 音频规范化、VAD 检测、片段导出与转录
+├── cli/                    # 命令行入口
+├── companies/              # 公司提取、单集任务、批量处理与报告
 ├── http/                   # 共享 HTTP 配置
-└── xiaoyuzhou/             # 单集页面解析与音频下载
-company_extraction.py       # 提示词、返回值校验与公司过滤
-episode_company_runner.py   # 单集任务和检查点恢复
-episode_processing_pipeline.py
-                            # 批量生产者与消费者流水线
-extract_episode_companies.py
-                            # 公司提取命令行入口
-extract_xiaoyuzhou_episode.py
-                            # 单集页面解析命令行入口
-openai_compatible_llm.py    # OpenAI 兼容客户端和重试配置
-xiaoyuzhou_xyz_client.py    # 本地 xyz 服务客户端
+├── llm/                    # OpenAI 兼容客户端、配置与重试
+└── xiaoyuzhou/             # 页面解析、音频下载与 xyz 服务集成
 ```
 
 ## 开发检查

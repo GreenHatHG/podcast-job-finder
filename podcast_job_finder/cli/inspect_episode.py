@@ -3,16 +3,18 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from podcast_job_finder.xiaoyuzhou.episode_page import (
-    EpisodeParseError,
-    parse_episode_url,
-)
+from podcast_job_finder.xiaoyuzhou.episode_client import parse_episode_url
+from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
 
 
-USAGE_TEXT: Final = "用法：python3 extract_xiaoyuzhou_episode.py <episode_url>"
+USAGE_TEXT: Final = "用法：podcast-inspect-episode <episode_url>"
+HELP_FLAGS: Final = frozenset({"-h", "--help"})
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] in HELP_FLAGS:
+        print(USAGE_TEXT)
+        return 0
     if len(sys.argv) != 2:
         print(USAGE_TEXT, file=sys.stderr)
         return 1

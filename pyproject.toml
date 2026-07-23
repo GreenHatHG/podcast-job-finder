@@ -9,6 +9,16 @@ dependencies = [
     "ten-vad>=1.0.6.8",
 ]
 
+[project.scripts]
+podcast-download-audio = "podcast_job_finder.cli.download_audio:main"
+podcast-find-jobs = "podcast_job_finder.cli.companies:main"
+podcast-inspect-episode = "podcast_job_finder.cli.inspect_episode:main"
+podcast-transcribe = "podcast_job_finder.cli.transcribe:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [dependency-groups]
 dev = [
   "mypy>=2.1.0",

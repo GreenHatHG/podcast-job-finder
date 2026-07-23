@@ -5,16 +5,18 @@ from pathlib import Path
 from typing import Final
 from urllib.parse import urlparse
 
-from podcast_job_finder.xiaoyuzhou._audio_errors import EpisodeAudioDownloadError
-from podcast_job_finder.xiaoyuzhou._audio_files import (
+from podcast_job_finder.xiaoyuzhou.episode_audio.errors import (
+    EpisodeAudioDownloadError,
+)
+from podcast_job_finder.xiaoyuzhou.episode_audio.files import (
     build_audio_target_path,
     store_episode_audio,
 )
-from podcast_job_finder.xiaoyuzhou.episode_page import (
-    EpisodeParseError,
+from podcast_job_finder.xiaoyuzhou.episode_client import (
     extract_episode_id_from_url,
     parse_episode_url,
 )
+from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
 
 
 DEFAULT_AUDIO_OUTPUT_DIR: Final = Path("output/audio")

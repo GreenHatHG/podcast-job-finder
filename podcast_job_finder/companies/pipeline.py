@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import logging
-import math
-import os
 import queue
 import threading
-import time
 from dataclasses import dataclass, replace
 from typing import Final, Sequence
 
-from tracing import trace_id_var
-from company_extraction import CompanyExtractionError, LlmClientProtocol
-from episode_company_runner import (
+from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
+from podcast_job_finder.companies.episode_runner import (
     EpisodeExtractionOutcome,
     EpisodeExtractionRuntime,
     EpisodeWorkItem,
@@ -19,22 +15,22 @@ from episode_company_runner import (
     restore_or_prepare_episode_work,
     run_prepared_episode_llm_work,
 )
-from llm_checkpoint_store import LlmCheckpointStore
-from openai_compatible_llm import (
+from podcast_job_finder.companies.models import CompanyExtractionError
+from podcast_job_finder.companies.rate_limit import (
+    PerMinuteRateLimiter,
+    PipelineRateConfig,
+    RateLimitedLlmClient,
+    format_rate,
+)
+from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmError,
 )
-from podcast_job_finder.xiaoyuzhou.episode_page import EpisodeParseError
+from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
+from podcast_job_finder.tracing import trace_id_var
 
 
-LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE_ENV: Final = (
-    "LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE"
-)
-LLM_PIPELINE_CONSUMER_RATE_PER_MINUTE_ENV: Final = (
-    "LLM_PIPELINE_CONSUMER_RATE_PER_MINUTE"
-)
-INVALID_RATE_ENV_TEMPLATE: Final = "环境变量 {env_name} 必须是大于 0 的数字。"
 RESULT_STATUS_SUCCESS: Final = "success"
 RESULT_STATUS_ERROR: Final = "error"
 TASK_QUEUE_MAX_SIZE: Final = 10
@@ -54,26 +50,6 @@ EXPECTED_EPISODE_ERRORS = (
     OpenAiCompatibleLlmError,
     ValueError,
 )
-
-
-class PipelineRateConfigError(ValueError):
-    """Raised when the pipeline rate configuration is invalid."""
-
-
-@dataclass(slots=True, frozen=True)
-class PipelineRateConfig:
-    producer_rate_per_minute: float | None = None
-    consumer_rate_per_minute: float | None = None
-
-    def __post_init__(self) -> None:
-        _validate_optional_rate(
-            self.producer_rate_per_minute,
-            LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE_ENV,
-        )
-        _validate_optional_rate(
-            self.consumer_rate_per_minute,
-            LLM_PIPELINE_CONSUMER_RATE_PER_MINUTE_ENV,
-        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,57 +91,6 @@ class _PipelineSharedState:
     fatal_error_state: _FatalErrorState
 
 
-class _PerMinuteRateLimiter:
-    def __init__(self, rate_per_minute: float | None) -> None:
-        self._min_interval_seconds = (
-            None if rate_per_minute is None else 60.0 / rate_per_minute
-        )
-        self._next_allowed_at: float | None = None
-
-    def wait_turn(self) -> None:
-        if self._min_interval_seconds is None:
-            return
-
-        current_time = time.monotonic()
-        if self._next_allowed_at is None:
-            self._next_allowed_at = current_time + self._min_interval_seconds
-            return
-
-        sleep_seconds = self._next_allowed_at - current_time
-        if sleep_seconds > 0:
-            time.sleep(sleep_seconds)
-            current_time = self._next_allowed_at
-        else:
-            current_time = time.monotonic()
-
-        self._next_allowed_at = current_time + self._min_interval_seconds
-
-
-class RateLimitedLlmClient:
-    def __init__(
-        self,
-        wrapped_client: LlmClientProtocol,
-        rate_limiter: _PerMinuteRateLimiter,
-    ) -> None:
-        self._wrapped_client = wrapped_client
-        self._rate_limiter = rate_limiter
-
-    def generate(self, prompt: str) -> str:
-        self._rate_limiter.wait_turn()
-        return self._wrapped_client.generate(prompt)
-
-
-def load_pipeline_rate_config_from_env() -> PipelineRateConfig:
-    return PipelineRateConfig(
-        producer_rate_per_minute=_get_optional_rate_env(
-            LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE_ENV
-        ),
-        consumer_rate_per_minute=_get_optional_rate_env(
-            LLM_PIPELINE_CONSUMER_RATE_PER_MINUTE_ENV
-        ),
-    )
-
-
 def run_pid_episode_pipeline(
     *,
     work_items: Sequence[EpisodeWorkItem],
@@ -176,8 +101,8 @@ def run_pid_episode_pipeline(
     logger.info(
         "启动节目流水线：总数=%d 生产速率=%s 消费速率=%s",
         len(work_items),
-        _format_rate(rate_config.producer_rate_per_minute),
-        _format_rate(rate_config.consumer_rate_per_minute),
+        format_rate(rate_config.producer_rate_per_minute),
+        format_rate(rate_config.consumer_rate_per_minute),
     )
     shared_state = _PipelineSharedState(
         checkpoint_store=checkpoint_store,
@@ -201,12 +126,12 @@ def _run_pipeline_workers(
     rate_config: PipelineRateConfig,
     shared_state: _PipelineSharedState,
 ) -> None:
-    producer_limiter = _PerMinuteRateLimiter(rate_config.producer_rate_per_minute)
+    producer_limiter = PerMinuteRateLimiter(rate_config.producer_rate_per_minute)
     consumer_runtime = replace(
         runtime,
         llm_client=RateLimitedLlmClient(
             runtime.llm_client,
-            _PerMinuteRateLimiter(rate_config.consumer_rate_per_minute),
+            PerMinuteRateLimiter(rate_config.consumer_rate_per_minute),
         ),
     )
     producer_thread = threading.Thread(
@@ -257,7 +182,7 @@ def _build_pipeline_result(
 def _produce_episode_tasks(
     work_items: Sequence[EpisodeWorkItem],
     runtime: EpisodeExtractionRuntime,
-    producer_limiter: _PerMinuteRateLimiter,
+    producer_limiter: PerMinuteRateLimiter,
     shared_state: _PipelineSharedState,
 ) -> None:
     total_episodes = len(work_items)
@@ -448,38 +373,3 @@ def _build_success_result_record(
         ],
         "filtered_count": extraction_outcome.extraction_result.filtered_count,
     }
-
-
-def _get_optional_rate_env(env_name: str) -> float | None:
-    raw_value = os.getenv(env_name)
-    if raw_value is None:
-        return None
-
-    normalized_value = raw_value.strip()
-    if not normalized_value:
-        return None
-
-    try:
-        parsed_value = float(normalized_value)
-    except ValueError as error:
-        raise PipelineRateConfigError(
-            INVALID_RATE_ENV_TEMPLATE.format(env_name=env_name)
-        ) from error
-
-    _validate_optional_rate(parsed_value, env_name)
-    return parsed_value
-
-
-def _validate_optional_rate(rate_per_minute: float | None, env_name: str) -> None:
-    if rate_per_minute is None:
-        return
-    if not math.isfinite(rate_per_minute) or rate_per_minute <= 0:
-        raise PipelineRateConfigError(
-            INVALID_RATE_ENV_TEMPLATE.format(env_name=env_name)
-        )
-
-
-def _format_rate(rate_per_minute: float | None) -> str:
-    if rate_per_minute is None:
-        return "不限速"
-    return f"{rate_per_minute}/分钟"
