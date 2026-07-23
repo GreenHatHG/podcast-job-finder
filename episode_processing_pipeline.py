@@ -179,15 +179,28 @@ def run_pid_episode_pipeline(
         _format_rate(rate_config.producer_rate_per_minute),
         _format_rate(rate_config.consumer_rate_per_minute),
     )
-    episode_results: list[dict | None] = [None] * len(work_items)
-    task_queue: queue.Queue[object] = queue.Queue(maxsize=TASK_QUEUE_MAX_SIZE)
-    fatal_error_state = _FatalErrorState()
     shared_state = _PipelineSharedState(
         checkpoint_store=checkpoint_store,
-        task_queue=task_queue,
-        episode_results=episode_results,
-        fatal_error_state=fatal_error_state,
+        task_queue=queue.Queue(maxsize=TASK_QUEUE_MAX_SIZE),
+        episode_results=[None] * len(work_items),
+        fatal_error_state=_FatalErrorState(),
     )
+    _run_pipeline_workers(
+        work_items=work_items,
+        runtime=runtime,
+        rate_config=rate_config,
+        shared_state=shared_state,
+    )
+    return _build_pipeline_result(shared_state)
+
+
+def _run_pipeline_workers(
+    *,
+    work_items: Sequence[EpisodeWorkItem],
+    runtime: EpisodeExtractionRuntime,
+    rate_config: PipelineRateConfig,
+    shared_state: _PipelineSharedState,
+) -> None:
     producer_limiter = _PerMinuteRateLimiter(rate_config.producer_rate_per_minute)
     consumer_runtime = replace(
         runtime,
@@ -214,14 +227,20 @@ def run_pid_episode_pipeline(
     producer_thread.join()
     consumer_thread.join()
 
-    fatal_error = fatal_error_state.get()
+
+def _build_pipeline_result(
+    shared_state: _PipelineSharedState,
+) -> PidEpisodePipelineResult:
+    fatal_error = shared_state.fatal_error_state.get()
     if fatal_error is not None:
         raise fatal_error
 
-    if any(result is None for result in episode_results):
+    if any(result is None for result in shared_state.episode_results):
         raise RuntimeError(EPISODE_RESULT_INCOMPLETE_ERROR)
 
-    finalized_results = [result for result in episode_results if result is not None]
+    finalized_results = [
+        result for result in shared_state.episode_results if result is not None
+    ]
     success_count = sum(
         1
         for result in finalized_results

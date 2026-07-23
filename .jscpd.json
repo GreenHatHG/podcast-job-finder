@@ -1,6 +1,6 @@
 {
   "minTokens": 20,
-  "minLines": 6,
+  "minLines": 8,
   "format": [
     "python"
   ],

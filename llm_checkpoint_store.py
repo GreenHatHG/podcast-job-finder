@@ -241,7 +241,7 @@ class LlmCheckpointStore:
             response_text=response_text,
         )
 
-    def _save_checkpoint_state(
+    def _save_checkpoint_state(  # pylint: disable=too-many-arguments
         self,
         *,
         payload: LlmCheckpointSavePayload,
