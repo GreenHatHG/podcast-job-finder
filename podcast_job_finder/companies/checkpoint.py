@@ -5,15 +5,16 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
 from podcast_job_finder.companies.models import CompanyExtractionResult
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
+    atomic_write_json,
     atomic_write_text,
 )
+from podcast_job_finder.timestamps import build_utc_timestamp
 
 
 CHECKPOINT_ROOT_DIR: Final = os.path.join("output", "checkpoints", "episodes")
@@ -184,7 +185,8 @@ class LlmCheckpointStore:
             return None
 
         try:
-            state_payload = self._read_json_file(state_path)
+            with open(state_path, encoding="utf-8") as file_obj:
+                state_payload = json.load(file_obj)
             state = LlmCheckpointState.from_dict(state_payload)
             prompt_text = self._read_optional_text_file(
                 os.path.join(directory_path, PROMPT_FILE_NAME)
@@ -282,7 +284,7 @@ class LlmCheckpointStore:
             companies=[] if companies is None else companies,
             filtered_count=filtered_count,
             error=error,
-            updated_at=_build_updated_at(),
+            updated_at=build_utc_timestamp().text,
         )
 
     def _save_checkpoint(
@@ -295,50 +297,31 @@ class LlmCheckpointStore:
     ) -> None:
         directory_path = self._build_episode_directory(episode_key)
         os.makedirs(directory_path, exist_ok=True)
-        self._write_json_file(
-            os.path.join(directory_path, STATE_FILE_NAME),
+        atomic_write_json(
+            Path(os.path.join(directory_path, STATE_FILE_NAME)),
             state.to_dict(),
+            mode=DEFAULT_FILE_CREATION_MODE,
         )
-        self._write_text_file(
-            os.path.join(directory_path, PROMPT_FILE_NAME),
+        atomic_write_text(
+            Path(os.path.join(directory_path, PROMPT_FILE_NAME)),
             prompt_text,
+            mode=DEFAULT_FILE_CREATION_MODE,
         )
         response_path = os.path.join(directory_path, RESPONSE_FILE_NAME)
         if response_text is None:
-            self._remove_file_if_exists(response_path)
+            Path(response_path).unlink(missing_ok=True)
         else:
-            self._write_text_file(response_path, response_text)
+            atomic_write_text(
+                Path(response_path),
+                response_text,
+                mode=DEFAULT_FILE_CREATION_MODE,
+            )
 
     def _build_episode_directory(self, episode_key: str) -> str:
         return os.path.join(self._root_dir, episode_key)
-
-    def _read_json_file(self, path: str) -> object:
-        with open(path, encoding="utf-8") as file_obj:
-            return json.load(file_obj)
 
     def _read_optional_text_file(self, path: str) -> str | None:
         if not os.path.exists(path):
             return None
         with open(path, encoding="utf-8") as file_obj:
             return file_obj.read()
-
-    def _write_json_file(self, path: str, payload: object) -> None:
-        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        self._write_text_file(path, content)
-
-    def _write_text_file(self, path: str, content: str) -> None:
-        atomic_write_text(
-            Path(path),
-            content,
-            mode=DEFAULT_FILE_CREATION_MODE,
-        )
-
-    def _remove_file_if_exists(self, path: str) -> None:
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-
-
-def _build_updated_at() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

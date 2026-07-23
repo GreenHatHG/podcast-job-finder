@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from contextlib import contextmanager
@@ -67,6 +68,16 @@ def atomic_write_text(
         overwrite=True,
         mode=mode,
     )
+
+
+def atomic_write_json(
+    target_path: Path,
+    payload: object,
+    *,
+    mode: int,
+) -> None:
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    atomic_write_text(target_path, content, mode=mode)
 
 
 @contextmanager

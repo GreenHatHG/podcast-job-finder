@@ -8,7 +8,7 @@ from typing import Final, Sequence
 
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.episode_runner import (
-    EpisodeExtractionOutcome,
+    CompletedEpisodeExtraction,
     EpisodeExtractionRuntime,
     EpisodeWorkItem,
     PreparedEpisodeLlmWork,
@@ -42,7 +42,7 @@ EPISODE_RESULT_INCOMPLETE_ERROR: Final = "节目流水线未生成完整结果�
 
 logger = logging.getLogger(__name__)
 
-EXPECTED_EPISODE_ERRORS = (
+EXPECTED_EPISODE_ERRORS: Final = (
     CompanyExtractionError,
     EmptyLlmResponseError,
     EpisodeParseError,
@@ -206,7 +206,7 @@ def _produce_episode_tasks(
                     runtime=runtime,
                     checkpoint_store=shared_state.checkpoint_store,
                 )
-                if isinstance(episode_work, EpisodeExtractionOutcome):
+                if isinstance(episode_work, CompletedEpisodeExtraction):
                     shared_state.episode_results[episode_index] = (
                         _build_success_result_record(episode_work)
                     )
@@ -266,18 +266,18 @@ def _consume_episode_tasks(
                 queued_work.work_item.title or queued_work.work_item.episode_url,
             )
             try:
-                extraction_outcome = run_prepared_episode_llm_work(
+                completed_extraction = run_prepared_episode_llm_work(
                     prepared_work=queued_work.prepared_work,
                     runtime=runtime,
                     checkpoint_store=shared_state.checkpoint_store,
                 )
                 logger.info(
                     "节目处理完成：提取到 %d 家公司，过滤 %d 家",
-                    len(extraction_outcome.extraction_result.companies),
-                    extraction_outcome.extraction_result.filtered_count,
+                    len(completed_extraction.extraction_result.companies),
+                    completed_extraction.extraction_result.filtered_count,
                 )
                 shared_state.episode_results[queued_work.episode_index] = (
-                    _build_success_result_record(extraction_outcome)
+                    _build_success_result_record(completed_extraction)
                 )
             except EXPECTED_EPISODE_ERRORS as error:
                 logger.info("节目消费失败：%s", error)
@@ -348,28 +348,28 @@ def _build_error_result_record(
     work_item: EpisodeWorkItem,
     error_message: str,
 ) -> dict:
-    return {
-        "status": RESULT_STATUS_ERROR,
-        "eid": work_item.eid,
-        "title": work_item.title,
-        "pub_date": work_item.pub_date,
-        "episode_url": work_item.episode_url,
-        "error": error_message,
-    }
+    record = work_item.to_result_metadata()
+    record.update(
+        {
+            "status": RESULT_STATUS_ERROR,
+            "error": error_message,
+        }
+    )
+    return record
 
 
 def _build_success_result_record(
-    extraction_outcome: EpisodeExtractionOutcome,
+    completed_extraction: CompletedEpisodeExtraction,
 ) -> dict:
-    return {
-        "status": RESULT_STATUS_SUCCESS,
-        "eid": extraction_outcome.eid,
-        "title": extraction_outcome.title,
-        "pub_date": extraction_outcome.pub_date,
-        "episode_url": extraction_outcome.episode_url,
-        "companies": [
-            company.to_dict()
-            for company in extraction_outcome.extraction_result.companies
-        ],
-        "filtered_count": extraction_outcome.extraction_result.filtered_count,
-    }
+    record = completed_extraction.episode.to_result_metadata()
+    record.update(
+        {
+            "status": RESULT_STATUS_SUCCESS,
+            "companies": [
+                company.to_dict()
+                for company in completed_extraction.extraction_result.companies
+            ],
+            "filtered_count": completed_extraction.extraction_result.filtered_count,
+        }
+    )
+    return record

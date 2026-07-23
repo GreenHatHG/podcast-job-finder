@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from podcast_job_finder.filesystem import OWNER_READ_WRITE_MODE, atomic_write_text
+from podcast_job_finder.filesystem import OWNER_READ_WRITE_MODE, atomic_write_json
 
 
 AUTH_SESSION_FILE_NAME: Final = ".xiaoyuzhou_auth.json"
@@ -86,9 +86,9 @@ def load_auth_session() -> XiaoyuzhouAuthSession:
 
 def save_auth_session(session: XiaoyuzhouAuthSession) -> None:
     try:
-        atomic_write_text(
+        atomic_write_json(
             AUTH_SESSION_PATH,
-            json.dumps(session.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            session.to_dict(),
             mode=OWNER_READ_WRITE_MODE,
         )
     except OSError as error:

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from pathlib import Path
 from typing import Final
+
+from podcast_job_finder.filesystem import (
+    DEFAULT_FILE_CREATION_MODE,
+    atomic_write_json,
+)
+from podcast_job_finder.timestamps import build_utc_timestamp
 
 
 OUTPUT_DIR: Final = "output"
@@ -43,7 +47,11 @@ def _save_summary_file(report_data: PidReportData) -> str:
     )
     report["unique_company_count"] = len(companies)
     report["companies"] = companies
-    _write_report_json(output_path, report)
+    atomic_write_json(
+        Path(output_path),
+        report,
+        mode=DEFAULT_FILE_CREATION_MODE,
+    )
     return output_path
 
 
@@ -91,20 +99,21 @@ def _save_result_file(report_data: PidReportData) -> str:
         failed_key="failed",
     )
     report["episodes"] = report_data.episodes
-    _write_report_json(output_path, report)
+    atomic_write_json(
+        Path(output_path),
+        report,
+        mode=DEFAULT_FILE_CREATION_MODE,
+    )
     return output_path
 
 
 def _build_output_file_details(template: str, pid: str) -> tuple[str, str]:
-    now = datetime.now(tz=timezone.utc)
-    timestamp_label = now.strftime("%Y%m%d_%H%M%S")
-    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    return _build_output_path(template, pid, timestamp_label), created_at
-
-
-def _build_output_path(template: str, pid: str, timestamp_label: str) -> str:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    return os.path.join(OUTPUT_DIR, template.format(pid=pid, timestamp=timestamp_label))
+    timestamp = build_utc_timestamp()
+    output_path = str(
+        Path(OUTPUT_DIR) / template.format(pid=pid, timestamp=timestamp.file_label)
+    )
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    return output_path, timestamp.text
 
 
 def _build_base_report(
@@ -124,9 +133,3 @@ def _build_base_report(
         success_key: report_data.success,
         failed_key: report_data.failed,
     }
-
-
-def _write_report_json(path: str, payload: object) -> None:
-    with open(path, "w", encoding="utf-8") as file_obj:
-        json.dump(payload, file_obj, ensure_ascii=False, indent=2)
-        file_obj.write("\n")

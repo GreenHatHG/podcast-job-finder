@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
@@ -22,7 +23,12 @@ from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmError,
+    OpenAiCompatibleLlmClient,
+    load_llm_retry_config_from_env,
+    load_openai_compatible_config_from_env,
 )
+from podcast_job_finder.llm.client import AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR
+from podcast_job_finder.llm.config import CHAT_COMPLETIONS_API_STYLE
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.xiaoyuzhou.episode_client import build_episode_url
 from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
@@ -39,6 +45,12 @@ from podcast_job_finder.xiaoyuzhou.xyz.client import (
     XyzClientError,
 )
 from podcast_job_finder.xiaoyuzhou.xyz.podcast_service import list_podcast_episodes
+from podcast_job_finder.audio.pid_transcription import (
+    PidAudioTranscriptionError,
+    PidAudioTranscriptionRuntime,
+    run_pid_audio_transcription,
+    save_pid_audio_transcription_report,
+)
 
 
 PROGRAM_NAME: Final = "podcast-find-jobs"
@@ -47,13 +59,16 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         f"用法：{PROGRAM_NAME} <episode_url>",
         f"      {PROGRAM_NAME} send-code --mobile <手机号> [--area-code +86]",
         f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
-        f"      {PROGRAM_NAME} pid --pid <pid> [--all]",
+        f"      {PROGRAM_NAME} pid --pid <pid> [--all] [--source page|audio]",
     ]
 )
 logger = logging.getLogger(__name__)
 SEND_CODE_COMMAND: Final = "send-code"
 LOGIN_COMMAND: Final = "login"
 PID_COMMAND: Final = "pid"
+PAGE_SOURCE: Final = "page"
+AUDIO_SOURCE: Final = "audio"
+SUPPORTED_PID_SOURCES: Final = (PAGE_SOURCE, AUDIO_SOURCE)
 HELP_FLAGS: Final = frozenset({"-h", "--help"})
 SUPPORTED_COMMANDS: Final = frozenset(
     {
@@ -98,6 +113,7 @@ def main() -> int:
         EpisodeParseError,
         OpenAiCompatibleConfigError,
         OpenAiCompatibleLlmError,
+        PidAudioTranscriptionError,
         XiaoyuzhouAuthStoreError,
         XyzClientError,
         ValueError,
@@ -135,6 +151,11 @@ def _build_command_parser() -> argparse.ArgumentParser:
     pid_parser = subparsers.add_parser(PID_COMMAND)
     pid_parser.add_argument("--pid", required=True)
     pid_parser.add_argument("--all", action="store_true", dest="fetch_all")
+    pid_parser.add_argument(
+        "--source",
+        choices=SUPPORTED_PID_SOURCES,
+        default=PAGE_SOURCE,
+    )
     return parser
 
 
@@ -174,9 +195,6 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
 
 def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
     auth_session = load_auth_session()
-    extraction_runtime = load_extraction_runtime_from_env()
-    pipeline_rate_config = load_pipeline_rate_config_from_env()
-    checkpoint_store = LlmCheckpointStore()
     logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
     episodes = list_podcast_episodes(
         xyz_client=xyz_client,
@@ -194,17 +212,25 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         )
         for episode_summary in episodes
     ]
+    if parsed_args.source == AUDIO_SOURCE:
+        return _run_pid_audio_mode(parsed_args.pid, work_items)
+    return _run_pid_page_mode(parsed_args.pid, work_items)
+
+
+def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+    extraction_runtime = load_extraction_runtime_from_env()
+    pipeline_rate_config = load_pipeline_rate_config_from_env()
     pipeline_result = run_pid_episode_pipeline(
         work_items=work_items,
         runtime=extraction_runtime,
-        checkpoint_store=checkpoint_store,
+        checkpoint_store=LlmCheckpointStore(),
         rate_config=pipeline_rate_config,
     )
     report_data = PidReportData(
-        pid=parsed_args.pid,
+        pid=pid,
         model=extraction_runtime.model,
         base_url=extraction_runtime.base_url,
-        total=len(episodes),
+        total=len(work_items),
         success=pipeline_result.success_count,
         failed=pipeline_result.fail_count,
         episodes=pipeline_result.episode_results,
@@ -214,6 +240,34 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
     logger.info("结果已保存到 %s", output_path)
     logger.info("公司汇总已保存到 %s", summary_path)
     return 1 if pipeline_result.fail_count > 0 else 0
+
+
+def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+    runtime = _load_audio_transcription_runtime()
+    result = run_pid_audio_transcription(
+        pid=pid,
+        work_items=work_items,
+        runtime=runtime,
+    )
+    report_path = save_pid_audio_transcription_report(
+        pid=pid,
+        runtime=runtime,
+        result=result,
+        output_dir=Path("output"),
+    )
+    logger.info("音频转写批次报告已保存到 %s", report_path)
+    return 1 if result.fail_count > 0 else 0
+
+
+def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
+    llm_config = load_openai_compatible_config_from_env()
+    if llm_config.api_style != CHAT_COMPLETIONS_API_STYLE:
+        raise OpenAiCompatibleConfigError(AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR)
+    return PidAudioTranscriptionRuntime(
+        llm_client=OpenAiCompatibleLlmClient(llm_config),
+        retry_config=load_llm_retry_config_from_env(),
+        llm_config=llm_config,
+    )
 
 
 def _run_single_episode_mode(episode_url: str) -> int:

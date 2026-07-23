@@ -55,6 +55,11 @@ REMOVE_PARTIAL_AUDIO_ERROR_TEMPLATE: Final = (
 
 
 def build_audio_target_path(output_dir: Path, eid: str, extension: str) -> Path:
+    episode_dir = prepare_episode_audio_directory(output_dir, eid)
+    return episode_dir / f"{SOURCE_FILE_STEM}{extension}"
+
+
+def prepare_episode_audio_directory(output_dir: Path, eid: str) -> Path:
     try:
         resolved_output_dir = output_dir.resolve()
         episode_dir = resolved_output_dir / eid
@@ -75,7 +80,7 @@ def build_audio_target_path(output_dir: Path, eid: str, extension: str) -> Path:
                     actual_path=actual_episode_dir,
                 )
             )
-        return episode_dir / f"{SOURCE_FILE_STEM}{extension}"
+        return episode_dir
     except OSError as error:
         raise EpisodeAudioDownloadError(
             PREPARE_OUTPUT_DIR_ERROR_TEMPLATE.format(
