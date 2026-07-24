@@ -4,17 +4,24 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
+from podcast_job_finder.companies.audio_pipeline import (
+    run_pid_audio_company_extraction,
+)
 from podcast_job_finder.companies.episode_runner import (
+    EpisodeExtractionRuntime,
     EpisodeWorkItem,
     run_episode_company_extraction,
 )
 from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.pipeline import run_pid_episode_pipeline
 from podcast_job_finder.companies.rate_limit import (
+    PerMinuteRateLimiter,
+    RateLimitedLlmClient,
     load_pipeline_rate_config_from_env,
 )
 from podcast_job_finder.companies.reporting import PidReportData, save_pid_reports
@@ -243,20 +250,51 @@ def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
 
 
 def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
-    runtime = _load_audio_transcription_runtime()
-    result = run_pid_audio_transcription(
+    transcription_runtime = _load_audio_transcription_runtime()
+    transcription_result = run_pid_audio_transcription(
         pid=pid,
         work_items=work_items,
-        runtime=runtime,
+        runtime=transcription_runtime,
     )
     report_path = save_pid_audio_transcription_report(
         pid=pid,
-        runtime=runtime,
-        result=result,
+        runtime=transcription_runtime,
+        result=transcription_result,
         output_dir=Path("output"),
     )
     logger.info("音频转写批次报告已保存到 %s", report_path)
-    return 1 if result.fail_count > 0 else 0
+
+    extraction_runtime = _load_audio_extraction_runtime()
+    extraction_result = run_pid_audio_company_extraction(
+        transcription_result=transcription_result,
+        runtime=extraction_runtime,
+    )
+    output_path, summary_path = save_pid_reports(
+        PidReportData(
+            pid=pid,
+            model=extraction_runtime.model,
+            base_url=extraction_runtime.base_url,
+            total=len(work_items),
+            success=extraction_result.success_count,
+            failed=extraction_result.fail_count,
+            episodes=extraction_result.episode_results,
+        )
+    )
+    logger.info("音频公司提取结果已保存到 %s", output_path)
+    logger.info("音频公司汇总已保存到 %s", summary_path)
+    return 1 if extraction_result.fail_count > 0 else 0
+
+
+def _load_audio_extraction_runtime() -> EpisodeExtractionRuntime:
+    runtime = load_extraction_runtime_from_env()
+    rate_config = load_pipeline_rate_config_from_env()
+    return replace(
+        runtime,
+        llm_client=RateLimitedLlmClient(
+            runtime.llm_client,
+            PerMinuteRateLimiter(rate_config.consumer_rate_per_minute),
+        ),
+    )
 
 
 def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:

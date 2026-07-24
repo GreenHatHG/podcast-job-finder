@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Collection, Final, Protocol
+from typing import Callable, Collection, Final, Protocol, Sequence
 
 from podcast_job_finder.companies.models import (
     COMPANIES_FIELD,
@@ -129,12 +129,24 @@ def parse_company_extraction_output(
     if not isinstance(companies_data, list):
         raise CompanyExtractionError(INVALID_COMPANIES_FIELD_ERROR)
 
+    companies = [
+        CompanyMention.from_dict(company_data) for company_data in companies_data
+    ]
+    return normalize_company_mentions(
+        companies,
+        company_blacklist=company_blacklist,
+    )
+
+
+def normalize_company_mentions(
+    company_mentions: Sequence[CompanyMention],
+    company_blacklist: Collection[str] | None = None,
+) -> CompanyExtractionResult:
     normalized_company_blacklist = _normalize_company_blacklist(company_blacklist)
     seen_company_names: set[str] = set()
     companies: list[CompanyMention] = []
     filtered_count = 0
-    for company_data in companies_data:
-        company = CompanyMention.from_dict(company_data)
+    for company in company_mentions:
         normalized_name = _normalize_company_name(company.name)
         if normalized_name in seen_company_names:
             continue
@@ -161,6 +173,7 @@ def run_company_extraction_from_prompt(
     llm_client: LlmClientProtocol,
     company_blacklist: Collection[str] | None = None,
     retry_config: LlmRetryConfig | None = None,
+    result_validator: Callable[[CompanyExtractionResult], None] | None = None,
 ) -> CompanyExtractionAttempt:
     last_response_text: str | None = None
 
@@ -173,6 +186,8 @@ def run_company_extraction_from_prompt(
             response_text,
             company_blacklist=company_blacklist,
         )
+        if result_validator is not None:
+            result_validator(extraction_result)
         return CompanyExtractionAttempt(
             response_text=response_text,
             extraction_result=extraction_result,

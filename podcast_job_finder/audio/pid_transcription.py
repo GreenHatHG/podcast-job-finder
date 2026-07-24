@@ -377,6 +377,7 @@ def _build_segment_records(
                 "transcription_path": str(
                     exported_segment.file_path.with_suffix(".json")
                 ),
+                "text": transcribed_segment.text,
             }
         )
     return records
