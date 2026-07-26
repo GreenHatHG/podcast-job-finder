@@ -10,8 +10,8 @@ from ten_vad import TenVad  # type: ignore[import-untyped]
 
 from podcast_job_finder.audio._segment_split import (
     MIN_CUT_POSITION_RATIO,
-    LongSegmentSplitConfig,
-    split_long_segments,
+    SegmentPartitionConfig,
+    optimize_segment_partition,
 )
 from podcast_job_finder.audio.normalized_audio import NormalizedAudio
 from podcast_job_finder.progress import PercentageProgressLogger
@@ -46,6 +46,9 @@ LOW_ENERGY_THRESHOLD_MULTIPLIER: Final = 0.8
 # 强制切分时推荐保留的真实音频重叠范围；0 表示关闭重叠。
 MIN_FORCED_SPLIT_OVERLAP_MS: Final = 500
 MAX_FORCED_SPLIT_OVERLAP_MS: Final = 800
+
+# 每个片段优先保留的最短语音时长。短于这个时长的相邻片段会尝试合并。
+MIN_TARGET_SPEECH_DURATION_MS: Final = 20_000
 
 # 自动降低判断标准时允许达到的最低值，避免把大量背景声算作人声。
 MIN_ADAPTIVE_THRESHOLD: Final = 0.2
@@ -117,18 +120,18 @@ class VadConfig:
     # 数值越小越容易把轻声和背景声算作说话，数值越大越容易漏掉轻声，默认 0.5。
     threshold: float = 0.5
 
-    # 每个片段期望保留的最短说话时间，单位是毫秒，1000 表示 1 秒。
+    # 每个片段期望保留的最短说话时间，单位是毫秒，20000 表示 20 秒。
     # 短于这个时间的内容会与相邻片段合并。
     # 数值越大，零碎片段越少；数值越小，短句越容易单独保留。
-    min_speech_duration_ms: int = 1_000
+    min_speech_duration_ms: int = MIN_TARGET_SPEECH_DURATION_MS
 
-    # 每个片段允许的最长说话时间，单位是毫秒，30000 表示 30 秒。
-    # 超过后会优先在停顿处切开，找不到停顿时也会切开。
+    # 每个片段允许新增的最长原始语音时间，单位是毫秒，30000 表示 30 秒。
+    # 备用硬切点的导出长度可在此基础上增加 forced_split_overlap_ms。
     # 数值越大，单个片段越长；数值越小，生成的片段越多。
     max_speech_duration_ms: int = 30_000
 
-    # 片段因最长时长限制而被强制切开时，相邻片段重复保留的真实音频时长。
-    # 640 毫秒对应 40 个 VAD 帧，用于给识别模型保留切点附近的完整发音。
+    # 连续语音找不到停顿而使用备用切点时，下一片段向前重复保留的音频时长。
+    # 640 毫秒对应 40 个 VAD 帧；停顿切点无需重复音频。
     forced_split_overlap_ms: int = 640
 
     # 一段安静持续多久才算一句话结束。单位是毫秒，600 表示 0.6 秒。
@@ -200,17 +203,7 @@ def _detect_speech_segments(
     )
     logger.debug("自然停顿分段完成：segment_count=%d", len(raw_segments))
 
-    # 第三步：把时间太短的内容并入相邻片段，减少零碎片段。
-    merged_segments = _merge_short_segments(
-        raw_segments,
-        min_speech_frames=_milliseconds_to_frames(
-            config.min_speech_duration_ms,
-            frame_duration_ms,
-        ),
-    )
-    logger.debug("短片段合并完成：segment_count=%d", len(merged_segments))
-
-    # 第四步：把时间太长的内容优先从停顿处切开，控制单个片段长度。
+    # 第三步：综合停顿质量和片段长度，一次确定全部切分与合并边界。
     max_speech_frames = _milliseconds_to_frames(
         config.max_speech_duration_ms,
         frame_duration_ms,
@@ -219,20 +212,27 @@ def _detect_speech_segments(
         config.forced_split_overlap_ms,
         frame_duration_ms,
     )
-    split_segments = split_long_segments(
-        merged_segments,
+    optimized_segments = optimize_segment_partition(
+        raw_segments,
         speech_frames=speech_frames,
         audio=audio,
-        config=LongSegmentSplitConfig(
+        config=SegmentPartitionConfig(
+            min_speech_frames=_milliseconds_to_frames(
+                config.min_speech_duration_ms,
+                frame_duration_ms,
+            ),
             max_speech_frames=max_speech_frames,
             overlap_frames=forced_split_overlap_frames,
             frame_samples=VAD_FRAME_SAMPLES,
         ),
     )
-    logger.debug("长片段切分完成：segment_count=%d", len(split_segments))
+    logger.debug(
+        "全局片段优化完成：segment_count=%d",
+        len(optimized_segments),
+    )
 
-    # 第五步：把内部使用的帧位置转换成精确的采样位置。
-    return _convert_to_segments(split_segments)
+    # 第四步：把内部使用的帧位置转换成精确的采样位置。
+    return _convert_to_segments(optimized_segments)
 
 
 def _classify_speech_frames(
@@ -381,40 +381,6 @@ def _build_natural_segments(
     if speech_start is not None:
         segments.append((speech_start, len(speech_frames) - silence_frames))
     return segments
-
-
-def _merge_short_segments(
-    segments: list[tuple[int, int]],
-    *,
-    min_speech_frames: int,
-) -> list[tuple[int, int]]:
-    """把时间太短的片段并入相邻片段，减少零碎的小文件。
-
-    上一个片段太短时，会把它和当前片段连在一起；当前片段太短时，会把它并入
-    上一个片段。合并后的范围会包含两个片段之间的安静时间。
-    """
-    merged: list[tuple[int, int]] = []
-    for start_frame, end_frame in segments:
-        # 第一个片段暂时没有相邻片段可以选择，先保存下来。
-        if not merged:
-            merged.append((start_frame, end_frame))
-            continue
-
-        previous_start, previous_end = merged[-1]
-
-        # 上一个片段太短时，将它的开始位置延续到当前片段的结束位置。
-        if previous_end - previous_start < min_speech_frames:
-            merged[-1] = (previous_start, end_frame)
-            continue
-
-        # 当前片段太短时，延长上一个片段，让当前内容归入其中。
-        if end_frame - start_frame < min_speech_frames:
-            merged[-1] = (previous_start, end_frame)
-            continue
-
-        # 两个片段都达到最短要求，保留当前片段原有的范围。
-        merged.append((start_frame, end_frame))
-    return merged
 
 
 def _convert_to_segments(
