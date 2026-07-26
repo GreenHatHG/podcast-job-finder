@@ -41,20 +41,34 @@ uv sync
 
 ## 配置大语言模型
 
-处理公司信息前，需要在当前终端设置以下环境变量：
-
-- `OPENAI_API_KEY`：接口密钥，必填。
-- `OPENAI_MODEL`：模型名称，必填。
-- `OPENAI_API_STYLE`：接口类型，必填，可选值为 `responses` 或 `chat.completions`。
-- `OPENAI_BASE_URL`：兼容接口地址，可选；使用 OpenAI 官方接口时可省略。
+页面公司提取、音频转写和音频公司提取分别使用独立的大语言模型配置。
 
 例如创建一个不会提交到 Git 的 `.env` 文件：
 
 ```dotenv
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=your-model
-OPENAI_API_STYLE=responses
-# OPENAI_BASE_URL=https://your-provider.example/v1
+# 页面公司提取
+LLM_PAGE_COMPANY_EXTRACTION_API_KEY=your-page-extraction-api-key
+LLM_PAGE_COMPANY_EXTRACTION_MODEL=your-page-extraction-model
+LLM_PAGE_COMPANY_EXTRACTION_API_STYLE=responses
+# LLM_PAGE_COMPANY_EXTRACTION_BASE_URL=https://provider.example/v1
+LLM_PAGE_COMPANY_EXTRACTION_RATE_PER_MINUTE=10
+
+# 小宇宙单集页面请求速率
+EPISODE_PAGE_FETCH_RATE_PER_MINUTE=10
+
+# 音频转写，仅支持 chat.completions
+LLM_AUDIO_TRANSCRIPTION_API_KEY=your-transcription-api-key
+LLM_AUDIO_TRANSCRIPTION_MODEL=your-transcription-model
+LLM_AUDIO_TRANSCRIPTION_API_STYLE=chat.completions
+# LLM_AUDIO_TRANSCRIPTION_BASE_URL=https://audio-provider.example/v1
+LLM_AUDIO_TRANSCRIPTION_RATE_PER_MINUTE=10
+
+# 从音频转写文本提取公司
+LLM_AUDIO_COMPANY_EXTRACTION_API_KEY=your-audio-extraction-api-key
+LLM_AUDIO_COMPANY_EXTRACTION_MODEL=your-audio-extraction-model
+LLM_AUDIO_COMPANY_EXTRACTION_API_STYLE=responses
+# LLM_AUDIO_COMPANY_EXTRACTION_BASE_URL=https://provider.example/v1
+LLM_AUDIO_COMPANY_EXTRACTION_RATE_PER_MINUTE=10
 ```
 
 程序不会自动读取 `.env`。在 `zsh` 或 `bash` 中加载配置：
@@ -68,12 +82,14 @@ set +a
 以下变量用于调整运行行为：
 
 - `COMPANY_BLACKLIST`：需要过滤的公司名称，以英文逗号、中文逗号或换行分隔；匹配时忽略大小写和名称两端空白。
-- `OPENAI_MAX_ATTEMPTS`：单集最大尝试次数，默认为 `3`。
-- `OPENAI_RETRY_BASE_DELAY_SECONDS`：首次重试等待秒数，默认为 `1.0`。
-- `OPENAI_RETRY_MAX_DELAY_SECONDS`：重试等待秒数上限，默认为 `8.0`。
-- `LLM_PIPELINE_PRODUCER_RATE_PER_MINUTE`：批量模式中提示词任务进入队列的每分钟上限。
-- `LLM_PIPELINE_CONSUMER_RATE_PER_MINUTE`：批量模式中大语言模型请求的每分钟上限。
+- `LLM_<场景>_MAX_ATTEMPTS`：单次操作最大尝试次数，默认为 `3`。
+- `LLM_<场景>_RETRY_BASE_DELAY_SECONDS`：首次重试等待秒数，默认为 `1.0`。
+- `LLM_<场景>_RETRY_MAX_DELAY_SECONDS`：重试等待秒数上限，默认为 `8.0`。
+- `LLM_<场景>_RATE_PER_MINUTE`：该场景大语言模型请求的每分钟上限；留空时不限速，每次重试也计入限速。
+- `EPISODE_PAGE_FETCH_RATE_PER_MINUTE`：批量页面公司提取中，小宇宙单集页面 HTTP 请求的每分钟上限。
 - `LOG_LEVEL`：日志级别，默认为 `INFO`。
+
+`<场景>` 支持 `PAGE_COMPANY_EXTRACTION`、`AUDIO_TRANSCRIPTION` 和 `AUDIO_COMPANY_EXTRACTION`。`pid --source page` 只需要页面公司提取配置；`pid --source audio` 需要音频转写和音频公司提取配置；`podcast-transcribe` 只需要音频转写配置。地址、密钥和模型相同时，可以在 `.env` 中引用前面定义的变量。
 
 ## 使用方法
 

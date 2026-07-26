@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Final, Sequence
 
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
@@ -16,17 +16,20 @@ from podcast_job_finder.companies.episode_runner import (
     run_prepared_episode_llm_work,
 )
 from podcast_job_finder.companies.models import CompanyExtractionError
+from podcast_job_finder.companies.page_loader import (
+    DEFAULT_EPISODE_PAGE_LOADER,
+    EpisodePageLoaderProtocol,
+    RateLimitedEpisodePageLoader,
+)
 from podcast_job_finder.companies.rate_limit import (
-    PerMinuteRateLimiter,
     PipelineRateConfig,
-    RateLimitedLlmClient,
-    format_rate,
 )
 from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmError,
 )
+from podcast_job_finder.llm.rate_limit import format_rate
 from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
 from podcast_job_finder.tracing import trace_id_var
 
@@ -99,7 +102,7 @@ def run_pid_episode_pipeline(
     rate_config: PipelineRateConfig,
 ) -> PidEpisodePipelineResult:
     logger.info(
-        "启动节目流水线：总数=%d 生产速率=%s 消费速率=%s",
+        "启动节目流水线：总数=%d 单集页面请求速率=%s 页面公司提取 LLM 速率=%s",
         len(work_items),
         format_rate(rate_config.producer_rate_per_minute),
         format_rate(rate_config.consumer_rate_per_minute),
@@ -126,24 +129,20 @@ def _run_pipeline_workers(
     rate_config: PipelineRateConfig,
     shared_state: _PipelineSharedState,
 ) -> None:
-    producer_limiter = PerMinuteRateLimiter(rate_config.producer_rate_per_minute)
-    consumer_runtime = replace(
-        runtime,
-        llm_client=RateLimitedLlmClient(
-            runtime.llm_client,
-            PerMinuteRateLimiter(rate_config.consumer_rate_per_minute),
-        ),
+    page_loader = RateLimitedEpisodePageLoader(
+        DEFAULT_EPISODE_PAGE_LOADER,
+        rate_config.producer_rate_per_minute,
     )
     producer_thread = threading.Thread(
         name=PRODUCER_THREAD_NAME,
         target=_produce_episode_tasks,
-        args=(work_items, runtime, producer_limiter, shared_state),
+        args=(work_items, runtime, page_loader, shared_state),
     )
     consumer_thread = threading.Thread(
         name=CONSUMER_THREAD_NAME,
         target=_consume_episode_tasks,
         args=(
-            consumer_runtime,
+            runtime,
             shared_state,
         ),
     )
@@ -182,7 +181,7 @@ def _build_pipeline_result(
 def _produce_episode_tasks(
     work_items: Sequence[EpisodeWorkItem],
     runtime: EpisodeExtractionRuntime,
-    producer_limiter: PerMinuteRateLimiter,
+    page_loader: EpisodePageLoaderProtocol,
     shared_state: _PipelineSharedState,
 ) -> None:
     total_episodes = len(work_items)
@@ -205,6 +204,7 @@ def _produce_episode_tasks(
                     work_item=work_item,
                     runtime=runtime,
                     checkpoint_store=shared_state.checkpoint_store,
+                    page_loader=page_loader,
                 )
                 if isinstance(episode_work, CompletedEpisodeExtraction):
                     shared_state.episode_results[episode_index] = (
@@ -212,7 +212,6 @@ def _produce_episode_tasks(
                     )
                     continue
 
-                producer_limiter.wait_turn()
                 _put_queue_item(
                     task_queue=shared_state.task_queue,
                     payload=_QueuedEpisodeWork(

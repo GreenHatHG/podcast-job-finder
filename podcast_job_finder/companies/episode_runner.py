@@ -13,6 +13,10 @@ from podcast_job_finder.companies.extraction import (
 from podcast_job_finder.companies.models import (
     CompanyExtractionResult,
 )
+from podcast_job_finder.companies.page_loader import (
+    DEFAULT_EPISODE_PAGE_LOADER,
+    EpisodePageLoaderProtocol,
+)
 from podcast_job_finder.companies.checkpoint import (
     STATUS_FAILED,
     STATUS_PREPARED,
@@ -24,7 +28,6 @@ from podcast_job_finder.companies.checkpoint import (
 from podcast_job_finder.llm import LlmRetryConfig
 from podcast_job_finder.xiaoyuzhou.episode_client import (
     extract_episode_id_from_url,
-    parse_episode_url,
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 
@@ -162,6 +165,7 @@ def restore_or_prepare_episode_work(
     work_item: EpisodeWorkItem,
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
+    page_loader: EpisodePageLoaderProtocol = DEFAULT_EPISODE_PAGE_LOADER,
 ) -> CompletedEpisodeExtraction | PreparedEpisodeLlmWork:
     checkpoint_result = restore_success_checkpoint(
         work_item=work_item,
@@ -174,6 +178,7 @@ def restore_or_prepare_episode_work(
         work_item=work_item,
         runtime=runtime,
         checkpoint_store=checkpoint_store,
+        page_loader=page_loader,
     )
 
 
@@ -222,6 +227,7 @@ def prepare_episode_llm_work(
     work_item: EpisodeWorkItem,
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
+    page_loader: EpisodePageLoaderProtocol = DEFAULT_EPISODE_PAGE_LOADER,
 ) -> PreparedEpisodeLlmWork:
     checkpoint_context = _load_episode_checkpoint_context(
         work_item=work_item,
@@ -250,7 +256,7 @@ def prepare_episode_llm_work(
             )
 
     logger.info("抓取节目页面：%s", work_item.episode_url)
-    episode = parse_episode_url(work_item.episode_url)
+    episode = page_loader.load(work_item.episode_url)
     prompt_text = build_company_extraction_prompt(
         build_company_extraction_input(episode)
     )

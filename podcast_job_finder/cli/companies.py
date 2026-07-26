@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
@@ -13,32 +12,26 @@ from podcast_job_finder.companies.audio_pipeline import (
     run_pid_audio_company_extraction,
 )
 from podcast_job_finder.companies.episode_runner import (
-    EpisodeExtractionRuntime,
     EpisodeWorkItem,
     run_episode_company_extraction,
 )
-from podcast_job_finder.companies.models import CompanyExtractionError
-from podcast_job_finder.companies.pipeline import run_pid_episode_pipeline
+from podcast_job_finder.companies.pipeline import (
+    EXPECTED_EPISODE_ERRORS,
+    run_pid_episode_pipeline,
+)
 from podcast_job_finder.companies.rate_limit import (
-    PerMinuteRateLimiter,
-    RateLimitedLlmClient,
     load_pipeline_rate_config_from_env,
 )
 from podcast_job_finder.companies.reporting import PidReportData, save_pid_reports
-from podcast_job_finder.companies.runtime import load_extraction_runtime_from_env
-from podcast_job_finder.llm import (
-    EmptyLlmResponseError,
-    OpenAiCompatibleConfigError,
-    OpenAiCompatibleLlmError,
-    OpenAiCompatibleLlmClient,
-    load_llm_retry_config_from_env,
-    load_openai_compatible_config_from_env,
+from podcast_job_finder.companies.runtime import (
+    load_audio_extraction_runtime_from_env,
+    load_page_extraction_runtime_from_env,
 )
-from podcast_job_finder.llm.client import AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR
-from podcast_job_finder.llm.config import CHAT_COMPLETIONS_API_STYLE
+from podcast_job_finder.llm import (
+    load_audio_transcription_llm_runtime_config_from_env,
+)
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.xiaoyuzhou.episode_client import build_episode_url
-from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
 from podcast_job_finder.xiaoyuzhou.xyz.auth_store import (
     XiaoyuzhouAuthStoreError,
     build_auth_session,
@@ -92,6 +85,15 @@ class CliUsageError(ValueError):
     """Raised when the command line arguments are invalid."""
 
 
+EXPECTED_CLI_ERRORS: Final = (
+    CliUsageError,
+    PidAudioTranscriptionError,
+    XiaoyuzhouAuthStoreError,
+    XyzClientError,
+    *EXPECTED_EPISODE_ERRORS,
+)
+
+
 class _CliArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise CliUsageError(COMMAND_USAGE_TEXT)
@@ -113,18 +115,7 @@ def main() -> int:
         if len(raw_args) != 1:
             raise CliUsageError(COMMAND_USAGE_TEXT)
         return _run_single_episode_mode(raw_args[0])
-    except (
-        CliUsageError,
-        CompanyExtractionError,
-        EmptyLlmResponseError,
-        EpisodeParseError,
-        OpenAiCompatibleConfigError,
-        OpenAiCompatibleLlmError,
-        PidAudioTranscriptionError,
-        XiaoyuzhouAuthStoreError,
-        XyzClientError,
-        ValueError,
-    ) as error:
+    except EXPECTED_CLI_ERRORS as error:
         print(str(error), file=sys.stderr)
         return 1
 
@@ -225,7 +216,7 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
 
 
 def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
-    extraction_runtime = load_extraction_runtime_from_env()
+    extraction_runtime = load_page_extraction_runtime_from_env()
     pipeline_rate_config = load_pipeline_rate_config_from_env()
     pipeline_result = run_pid_episode_pipeline(
         work_items=work_items,
@@ -251,6 +242,7 @@ def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
 
 def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
     transcription_runtime = _load_audio_transcription_runtime()
+    extraction_runtime = load_audio_extraction_runtime_from_env()
     transcription_result = run_pid_audio_transcription(
         pid=pid,
         work_items=work_items,
@@ -264,7 +256,6 @@ def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
     )
     logger.info("音频转写批次报告已保存到 %s", report_path)
 
-    extraction_runtime = _load_audio_extraction_runtime()
     extraction_result = run_pid_audio_company_extraction(
         transcription_result=transcription_result,
         runtime=extraction_runtime,
@@ -285,32 +276,19 @@ def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
     return 1 if extraction_result.fail_count > 0 else 0
 
 
-def _load_audio_extraction_runtime() -> EpisodeExtractionRuntime:
-    runtime = load_extraction_runtime_from_env()
-    rate_config = load_pipeline_rate_config_from_env()
-    return replace(
-        runtime,
-        llm_client=RateLimitedLlmClient(
-            runtime.llm_client,
-            PerMinuteRateLimiter(rate_config.consumer_rate_per_minute),
-        ),
-    )
-
-
 def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
-    llm_config = load_openai_compatible_config_from_env()
-    if llm_config.api_style != CHAT_COMPLETIONS_API_STYLE:
-        raise OpenAiCompatibleConfigError(AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR)
+    llm_runtime = load_audio_transcription_llm_runtime_config_from_env()
+    llm_config = llm_runtime.client_config
     return PidAudioTranscriptionRuntime(
-        llm_client=OpenAiCompatibleLlmClient(llm_config),
-        retry_config=load_llm_retry_config_from_env(),
+        llm_client=llm_runtime.build_client(),
+        retry_config=llm_runtime.retry_config,
         llm_config=llm_config,
     )
 
 
 def _run_single_episode_mode(episode_url: str) -> int:
     logger.info("处理单个节目：%s", episode_url)
-    extraction_runtime = load_extraction_runtime_from_env()
+    extraction_runtime = load_page_extraction_runtime_from_env()
     extraction_outcome = run_episode_company_extraction(
         work_item=EpisodeWorkItem(episode_url=episode_url),
         runtime=extraction_runtime,

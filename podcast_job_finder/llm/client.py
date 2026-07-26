@@ -21,14 +21,11 @@ from openai.types.chat import (
 
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
 from podcast_job_finder.llm.config import (
-    CHAT_COMPLETIONS_API_STYLE,
     RESPONSES_API_STYLE,
     OpenAiCompatibleConfig,
-    validate_api_style,
 )
 from podcast_job_finder.llm.errors import (
     EmptyLlmResponseError,
-    OpenAiCompatibleConfigError,
     OpenAiCompatibleLlmError,
     RetryableOpenAiCompatibleLlmError,
 )
@@ -37,9 +34,6 @@ from podcast_job_finder.llm.errors import (
 RETRYABLE_STATUS_CODES: Final = frozenset({408, 409, 429})
 EMPTY_RESPONSE_TEXT_ERROR: Final = "LLM 返回了空文本。"
 LLM_REQUEST_ERROR_TEMPLATE: Final = "LLM 调用失败：{error_message}"
-AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR: Final = (
-    "音频识别仅支持 chat.completions API 风格。"
-)
 EMPTY_AUDIO_ERROR: Final = "待识别音频不能为空。"
 USER_ROLE: Final = "user"
 AudioFormat = Literal["wav", "mp3"]
@@ -47,7 +41,6 @@ AudioFormat = Literal["wav", "mp3"]
 
 class OpenAiCompatibleLlmClient:
     def __init__(self, config: OpenAiCompatibleConfig) -> None:
-        validate_api_style(config.api_style)
         self._config = config
         self._client = OpenAI(
             api_key=config.api_key,
@@ -71,8 +64,6 @@ class OpenAiCompatibleLlmClient:
         audio_format: AudioFormat,
         prompt: str,
     ) -> str:
-        if self._config.api_style != CHAT_COMPLETIONS_API_STYLE:
-            raise OpenAiCompatibleConfigError(AUDIO_REQUIRES_CHAT_COMPLETIONS_ERROR)
         if not audio_data:
             raise ValueError(EMPTY_AUDIO_ERROR)
         return self._execute_request(

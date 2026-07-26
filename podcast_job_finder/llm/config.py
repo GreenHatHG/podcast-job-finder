@@ -7,10 +7,10 @@ from typing import Final
 from podcast_job_finder.llm.errors import OpenAiCompatibleConfigError
 
 
-OPENAI_API_KEY_ENV: Final = "OPENAI_API_KEY"
-OPENAI_MODEL_ENV: Final = "OPENAI_MODEL"
-OPENAI_API_STYLE_ENV: Final = "OPENAI_API_STYLE"
-OPENAI_BASE_URL_ENV: Final = "OPENAI_BASE_URL"
+API_KEY_ENV_SUFFIX: Final = "API_KEY"
+MODEL_ENV_SUFFIX: Final = "MODEL"
+API_STYLE_ENV_SUFFIX: Final = "API_STYLE"
+BASE_URL_ENV_SUFFIX: Final = "BASE_URL"
 RESPONSES_API_STYLE: Final = "responses"
 CHAT_COMPLETIONS_API_STYLE: Final = "chat.completions"
 SUPPORTED_API_STYLES: Final = (
@@ -19,7 +19,7 @@ SUPPORTED_API_STYLES: Final = (
 )
 MISSING_ENV_ERROR_TEMPLATE: Final = "缺少环境变量：{env_name}"
 INVALID_API_STYLE_ERROR_TEMPLATE: Final = (
-    "环境变量 OPENAI_API_STYLE 仅支持以下取值：responses, chat.completions。"
+    "环境变量 {env_name} 仅支持以下取值：responses, chat.completions。"
 )
 
 
@@ -31,14 +31,20 @@ class OpenAiCompatibleConfig:
     base_url: str | None = None
 
 
-def load_openai_compatible_config_from_env() -> OpenAiCompatibleConfig:
-    api_key = _get_required_env(OPENAI_API_KEY_ENV)
-    model = _get_required_env(OPENAI_MODEL_ENV)
-    api_style = _get_required_env(OPENAI_API_STYLE_ENV)
+def load_openai_compatible_config_from_env(
+    env_prefix: str,
+) -> OpenAiCompatibleConfig:
+    api_key_env = build_llm_env_name(env_prefix, API_KEY_ENV_SUFFIX)
+    model_env = build_llm_env_name(env_prefix, MODEL_ENV_SUFFIX)
+    api_style_env = build_llm_env_name(env_prefix, API_STYLE_ENV_SUFFIX)
+    base_url_env = build_llm_env_name(env_prefix, BASE_URL_ENV_SUFFIX)
+    api_key = _get_required_env(api_key_env)
+    model = _get_required_env(model_env)
+    api_style = _get_required_env(api_style_env)
     normalized_api_style = api_style.strip()
-    validate_api_style(normalized_api_style)
+    _validate_api_style(normalized_api_style, api_style_env)
 
-    base_url = os.getenv(OPENAI_BASE_URL_ENV)
+    base_url = os.getenv(base_url_env)
     return OpenAiCompatibleConfig(
         api_key=api_key,
         model=model,
@@ -47,9 +53,15 @@ def load_openai_compatible_config_from_env() -> OpenAiCompatibleConfig:
     )
 
 
-def validate_api_style(api_style: str) -> None:
+def _validate_api_style(api_style: str, env_name: str) -> None:
     if api_style not in SUPPORTED_API_STYLES:
-        raise OpenAiCompatibleConfigError(INVALID_API_STYLE_ERROR_TEMPLATE)
+        raise OpenAiCompatibleConfigError(
+            INVALID_API_STYLE_ERROR_TEMPLATE.format(env_name=env_name)
+        )
+
+
+def build_llm_env_name(env_prefix: str, suffix: str) -> str:
+    return f"{env_prefix}_{suffix}"
 
 
 def _get_required_env(env_name: str) -> str:

@@ -9,10 +9,8 @@ from typing import Final, NoReturn, Sequence
 from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
-    OpenAiCompatibleLlmClient,
     OpenAiCompatibleLlmError,
-    load_llm_retry_config_from_env,
-    load_openai_compatible_config_from_env,
+    load_audio_transcription_llm_runtime_config_from_env,
 )
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
@@ -39,8 +37,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     args = _build_argument_parser().parse_args(argv)
     try:
-        config = load_openai_compatible_config_from_env()
-        retry_config = load_llm_retry_config_from_env()
+        llm_runtime = load_audio_transcription_llm_runtime_config_from_env()
+        config = llm_runtime.client_config
         exported_segments = detect_and_export_speech_segments(
             args.audio_path,
             output_dir=args.output_dir,
@@ -53,8 +51,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result = transcribe_speech_segments(
             selected_segments,
-            llm_client=OpenAiCompatibleLlmClient(config),
-            retry_config=retry_config,
+            llm_client=llm_runtime.build_client(),
+            retry_config=llm_runtime.retry_config,
         )
     except (
         AudioFileDecodeError,
