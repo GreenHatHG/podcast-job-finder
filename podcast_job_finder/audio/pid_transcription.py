@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
 
@@ -23,12 +23,9 @@ from podcast_job_finder.audio import (
 )
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
-    TRANSCRIPTION_PROMPT_TEMPLATE,
     AudioTranscriptionClientProtocol,
     AudioTranscriptionError,
     AudioTranscriptionResult,
-    TranscribedSpeechSegment,
-    transcribe_speech_segment,
 )
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
@@ -43,9 +40,11 @@ from podcast_job_finder.xiaoyuzhou.episode_audio.service import (
     EpisodeAudioDownloadResult,
     download_episode_audio,
 )
-from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.audio.transcription_checkpoint import (
+    TRANSCRIPTION_CACHE_VERSION,
     SegmentTranscriptionCheckpointStore,
+    build_audio_transcription_runtime_signature,
+    transcribe_speech_segments_with_checkpoints,
 )
 from podcast_job_finder.timestamps import build_utc_timestamp
 
@@ -53,7 +52,6 @@ from podcast_job_finder.timestamps import build_utc_timestamp
 TRANSCRIPTION_FILE_NAME: Final = "transcription.json"
 SEGMENT_DIR_NAME: Final = "segments"
 TRANSCRIPTION_REPORT_TEMPLATE: Final = "transcription_result_{pid}_{timestamp}.json"
-TRANSCRIPTION_CACHE_VERSION: Final = 3
 RESULT_STATUS_SUCCESS: Final = "success"
 RESULT_STATUS_ERROR: Final = "error"
 MISSING_EPISODE_ID_ERROR: Final = "音频转写任务缺少有效的节目 ID：{url}"
@@ -88,7 +86,11 @@ class PidAudioTranscriptionRuntime:
 
     @property
     def runtime_signature(self) -> str:
-        return build_audio_transcription_runtime_signature(self)
+        return build_audio_transcription_runtime_signature(
+            llm_config=self.llm_config,
+            vad_config=self.vad_config,
+            silence_padding_ms=self.silence_padding_ms,
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -106,34 +108,24 @@ class _EpisodeTranscriptionContext:
     transcription_path: Path
 
 
-def build_audio_transcription_runtime_signature(
-    runtime: PidAudioTranscriptionRuntime,
-) -> str:
-    signature_payload = {
-        "cache_version": TRANSCRIPTION_CACHE_VERSION,
-        "model": runtime.llm_config.model,
-        "base_url": runtime.llm_config.base_url,
-        "api_style": runtime.llm_config.api_style,
-        "prompt_template": TRANSCRIPTION_PROMPT_TEMPLATE,
-        "vad_config": asdict(runtime.vad_config),
-        "silence_padding_ms": runtime.silence_padding_ms,
-    }
-    return build_runtime_signature_hash(signature_payload)
-
-
 def _build_segment_checkpoint_store(
     context: _EpisodeTranscriptionContext,
     *,
     runtime_signature: str,
 ) -> SegmentTranscriptionCheckpointStore:
     return SegmentTranscriptionCheckpointStore(
-        cache_version=TRANSCRIPTION_CACHE_VERSION,
         runtime_signature=runtime_signature,
-        pid=context.pid,
-        eid=context.eid,
-        episode_url=context.work_item.episode_url,
-        title=context.work_item.title,
-        pub_date=context.work_item.pub_date,
+        metadata={
+            "pid": context.pid,
+            "eid": context.eid,
+            "episode_url": context.work_item.episode_url,
+            "title": context.work_item.title,
+            "pub_date": context.work_item.pub_date,
+        },
+        expected_metadata={
+            "eid": context.eid,
+            "episode_url": context.work_item.episode_url,
+        },
     )
 
 
@@ -269,46 +261,17 @@ def _transcribe_segments_with_checkpoints(
     runtime: PidAudioTranscriptionRuntime,
     manifest_exists: bool,
 ) -> tuple[AudioTranscriptionResult, bool]:
-    transcribed_segments: list[TranscribedSpeechSegment] = []
-    previous_text = ""
-    all_segments_cached = manifest_exists and bool(exported_segments)
     checkpoint_store = _build_segment_checkpoint_store(
         context,
         runtime_signature=runtime.runtime_signature,
     )
-    for exported_segment in exported_segments:
-        transcription_path = exported_segment.file_path.with_suffix(".json")
-        transcribed_segment = checkpoint_store.load(
-            transcription_path,
-            exported_segment=exported_segment,
-            previous_text=previous_text,
-        )
-        if transcribed_segment is None:
-            all_segments_cached = False
-            transcribed_segment = transcribe_speech_segment(
-                exported_segment,
-                llm_client=runtime.llm_client,
-                previous_text=previous_text,
-                retry_config=runtime.retry_config,
-            )
-            checkpoint_store.save(
-                transcription_path,
-                exported_segment=exported_segment,
-                transcribed_segment=transcribed_segment,
-                previous_text=previous_text,
-            )
-        else:
-            logger.info(
-                "命中音频片段转写检查点：eid=%s index=%d",
-                context.eid,
-                exported_segment.index,
-            )
-        transcribed_segments.append(transcribed_segment)
-        previous_text = transcribed_segment.text
-    return (
-        AudioTranscriptionResult(segments=transcribed_segments),
-        all_segments_cached,
+    result, all_segments_cached = transcribe_speech_segments_with_checkpoints(
+        exported_segments,
+        llm_client=runtime.llm_client,
+        checkpoint_store=checkpoint_store,
+        retry_config=runtime.retry_config,
     )
+    return result, manifest_exists and all_segments_cached
 
 
 def _save_episode_transcription(

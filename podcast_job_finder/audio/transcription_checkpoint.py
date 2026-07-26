@@ -2,28 +2,36 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Final, Mapping, Sequence
 
 from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
-from podcast_job_finder.audio.transcription import TranscribedSpeechSegment
+from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
+from podcast_job_finder.audio.transcription import (
+    TRANSCRIPTION_PROMPT_TEMPLATE,
+    AudioTranscriptionClientProtocol,
+    AudioTranscriptionResult,
+    TranscribedSpeechSegment,
+    transcribe_speech_segment,
+)
+from podcast_job_finder.audio.vad import VadConfig
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
+from podcast_job_finder.llm import LlmRetryConfig, OpenAiCompatibleConfig
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.timestamps import build_utc_timestamp
 
+
+TRANSCRIPTION_CACHE_VERSION: Final = 3
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
 class SegmentTranscriptionCheckpointStore:
-    cache_version: int
     runtime_signature: str
-    pid: str
-    eid: str
-    episode_url: str
-    title: str | None
-    pub_date: str | None
+    metadata: Mapping[str, object]
+    expected_metadata: Mapping[str, object]
 
     def load(
         self,
@@ -61,13 +69,9 @@ class SegmentTranscriptionCheckpointStore:
         previous_text: str,
     ) -> None:
         payload = {
-            "cache_version": self.cache_version,
+            **self.metadata,
+            "cache_version": TRANSCRIPTION_CACHE_VERSION,
             "runtime_signature": self.runtime_signature,
-            "pid": self.pid,
-            "eid": self.eid,
-            "title": self.title,
-            "pub_date": self.pub_date,
-            "episode_url": self.episode_url,
             "created_at": build_utc_timestamp().text,
             "previous_text_signature": _build_previous_text_signature(previous_text),
             "audio_path": str(exported_segment.file_path),
@@ -81,16 +85,81 @@ class SegmentTranscriptionCheckpointStore:
         previous_text: str,
     ) -> dict[str, object]:
         return {
-            "cache_version": self.cache_version,
+            "cache_version": TRANSCRIPTION_CACHE_VERSION,
             "runtime_signature": self.runtime_signature,
-            "eid": self.eid,
-            "episode_url": self.episode_url,
+            **self.expected_metadata,
             "index": exported_segment.index,
             "start_ms": exported_segment.segment.start_ms,
             "end_ms": exported_segment.segment.end_ms,
             "audio_path": str(exported_segment.file_path),
             "previous_text_signature": _build_previous_text_signature(previous_text),
         }
+
+
+def build_audio_transcription_runtime_signature(
+    *,
+    llm_config: OpenAiCompatibleConfig,
+    vad_config: VadConfig = VadConfig(),
+    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
+) -> str:
+    signature_payload = {
+        "cache_version": TRANSCRIPTION_CACHE_VERSION,
+        "model": llm_config.model,
+        "base_url": llm_config.base_url,
+        "api_style": llm_config.api_style,
+        "prompt_template": TRANSCRIPTION_PROMPT_TEMPLATE,
+        "vad_config": asdict(vad_config),
+        "silence_padding_ms": silence_padding_ms,
+    }
+    return build_runtime_signature_hash(signature_payload)
+
+
+def transcribe_speech_segments_with_checkpoints(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    llm_client: AudioTranscriptionClientProtocol,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    retry_config: LlmRetryConfig | None = None,
+    overwrite: bool = False,
+) -> tuple[AudioTranscriptionResult, bool]:
+    transcribed_segments: list[TranscribedSpeechSegment] = []
+    previous_text = ""
+    all_segments_cached = bool(segments)
+    for segment in segments:
+        transcription_path = segment.file_path.with_suffix(".json")
+        transcribed_segment = None
+        if not overwrite:
+            transcribed_segment = checkpoint_store.load(
+                transcription_path,
+                exported_segment=segment,
+                previous_text=previous_text,
+            )
+        if transcribed_segment is None:
+            all_segments_cached = False
+            transcribed_segment = transcribe_speech_segment(
+                segment,
+                llm_client=llm_client,
+                previous_text=previous_text,
+                retry_config=retry_config,
+            )
+            checkpoint_store.save(
+                transcription_path,
+                exported_segment=segment,
+                transcribed_segment=transcribed_segment,
+                previous_text=previous_text,
+            )
+        else:
+            logger.info(
+                "命中音频片段转写检查点：path=%s index=%d",
+                transcription_path,
+                segment.index,
+            )
+        transcribed_segments.append(transcribed_segment)
+        previous_text = transcribed_segment.text
+    return (
+        AudioTranscriptionResult(segments=transcribed_segments),
+        all_segments_cached,
+    )
 
 
 def _read_json_object(path: Path) -> dict[str, object]:
