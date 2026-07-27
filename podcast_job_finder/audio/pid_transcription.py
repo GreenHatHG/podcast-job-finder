@@ -27,6 +27,10 @@ from podcast_job_finder.audio.transcription import (
     AudioTranscriptionError,
     AudioTranscriptionResult,
 )
+from podcast_job_finder.audio.transcription_manifest import (
+    TRANSCRIPTION_FILE_NAME,
+    save_audio_transcription_manifest,
+)
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
     atomic_write_json,
@@ -49,14 +53,12 @@ from podcast_job_finder.audio.transcription_checkpoint import (
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
-TRANSCRIPTION_FILE_NAME: Final = "transcription.json"
 SEGMENT_DIR_NAME: Final = "segments"
 TRANSCRIPTION_REPORT_TEMPLATE: Final = "transcription_result_{pid}_{timestamp}.json"
 RESULT_STATUS_SUCCESS: Final = "success"
 RESULT_STATUS_ERROR: Final = "error"
 MISSING_EPISODE_ID_ERROR: Final = "音频转写任务缺少有效的节目 ID：{url}"
 SAVE_REPORT_ERROR_TEMPLATE: Final = "保存音频转写批次报告失败：{path}，{error_message}"
-SAVE_TRANSCRIPTION_ERROR_TEMPLATE: Final = "保存节目转写失败：{path}，{error_message}"
 
 logger = logging.getLogger(__name__)
 
@@ -282,68 +284,25 @@ def _save_episode_transcription(
     result: AudioTranscriptionResult,
     exported_segments: Sequence[ExportedSpeechSegment],
 ) -> None:
-    created_at = build_utc_timestamp().text
-    segment_records = _build_segment_records(exported_segments, result)
-    payload = {
-        "cache_version": TRANSCRIPTION_CACHE_VERSION,
-        "runtime_signature": runtime.runtime_signature,
-        "pid": context.pid,
-        "eid": context.eid,
-        "title": context.work_item.title,
-        "pub_date": context.work_item.pub_date,
-        "episode_url": context.work_item.episode_url,
-        "model": runtime.llm_config.model,
-        "base_url": runtime.llm_config.base_url,
-        "api_style": runtime.llm_config.api_style,
-        "audio_path": str(download_result.local_path),
-        "source_url": download_result.source_url,
-        "created_at": created_at,
-        "segment_count": len(segment_records),
-        "text": result.text,
-        "segments": segment_records,
-    }
-    path = context.transcription_path
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(
-            path,
-            payload,
-            mode=DEFAULT_FILE_CREATION_MODE,
-        )
-    except OSError as error:
-        raise OSError(
-            SAVE_TRANSCRIPTION_ERROR_TEMPLATE.format(
-                path=path,
-                error_message=str(error),
-            )
-        ) from error
-
-
-def _build_segment_records(
-    exported_segments: Sequence[ExportedSpeechSegment],
-    result: AudioTranscriptionResult,
-) -> list[dict[str, object]]:
-    exported_by_index = {segment.index: segment for segment in exported_segments}
-    records: list[dict[str, object]] = []
-    for transcribed_segment in result.segments:
-        exported_segment = exported_by_index.get(transcribed_segment.index)
-        if exported_segment is None:
-            raise ValueError(
-                f"音频转写结果缺少对应的已导出片段：index={transcribed_segment.index}"
-            )
-        records.append(
-            {
-                "index": transcribed_segment.index,
-                "start_ms": transcribed_segment.start_ms,
-                "end_ms": transcribed_segment.end_ms,
-                "audio_path": str(exported_segment.file_path),
-                "transcription_path": str(
-                    exported_segment.file_path.with_suffix(".json")
-                ),
-                "text": transcribed_segment.text,
-            }
-        )
-    return records
+    save_audio_transcription_manifest(
+        context.transcription_path,
+        metadata={
+            "cache_version": TRANSCRIPTION_CACHE_VERSION,
+            "runtime_signature": runtime.runtime_signature,
+            "pid": context.pid,
+            "eid": context.eid,
+            "title": context.work_item.title,
+            "pub_date": context.work_item.pub_date,
+            "episode_url": context.work_item.episode_url,
+            "model": runtime.llm_config.model,
+            "base_url": runtime.llm_config.base_url,
+            "api_style": runtime.llm_config.api_style,
+            "audio_path": str(download_result.local_path),
+            "source_url": download_result.source_url,
+        },
+        exported_segments=exported_segments,
+        result=result,
+    )
 
 
 def _build_success_record(
