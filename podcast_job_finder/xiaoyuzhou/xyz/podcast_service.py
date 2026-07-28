@@ -27,6 +27,7 @@ def list_podcast_episodes(
     auth_session: XiaoyuzhouAuthSession,
     pid: str,
     fetch_all: bool,
+    max_episodes: int | None = None,
 ) -> tuple[PodcastEpisodeSummary, ...]:
     episodes: list[PodcastEpisodeSummary] = []
     load_more_key: EpisodeLoadMoreKey | None = None
@@ -39,6 +40,8 @@ def list_podcast_episodes(
             load_more_key=load_more_key,
         )
         episodes.extend(page.episodes)
+        if max_episodes is not None and len(episodes) >= max_episodes:
+            return tuple(episodes[:max_episodes])
         if not fetch_all or page.load_more_key is None:
             return tuple(episodes)
         load_more_key = page.load_more_key

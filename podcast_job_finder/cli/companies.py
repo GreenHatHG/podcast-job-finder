@@ -61,7 +61,10 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         f"用法：{PROGRAM_NAME} <episode_url>",
         f"      {PROGRAM_NAME} send-code --mobile <手机号> [--area-code +86]",
         f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
-        f"      {PROGRAM_NAME} pid --pid <pid> [--all] [--source page|audio]",
+        (
+            f"      {PROGRAM_NAME} pid --pid <pid> [--all] "
+            "[--max-episodes <正整数>] [--source page|audio]"
+        ),
     ]
 )
 logger = logging.getLogger(__name__)
@@ -151,12 +154,23 @@ def _build_command_parser() -> argparse.ArgumentParser:
     pid_parser = subparsers.add_parser(PID_COMMAND)
     pid_parser.add_argument("--pid", required=True)
     pid_parser.add_argument("--all", action="store_true", dest="fetch_all")
+    pid_parser.add_argument("--max-episodes", type=_parse_positive_int)
     pid_parser.add_argument(
         "--source",
         choices=SUPPORTED_PID_SOURCES,
         default=PAGE_SOURCE,
     )
     return parser
+
+
+def _parse_positive_int(value: str) -> int:
+    try:
+        parsed_value = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("必须是正整数") from error
+    if parsed_value < 1:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    return parsed_value
 
 
 def _run_send_code_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
@@ -201,8 +215,11 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         auth_session=auth_session,
         pid=parsed_args.pid,
         fetch_all=parsed_args.fetch_all,
+        max_episodes=parsed_args.max_episodes,
     )
     logger.info("抓取到 %d 个节目", len(episodes))
+    if parsed_args.max_episodes is not None:
+        logger.info("本次处理 %d 个节目", len(episodes))
     work_items = [
         EpisodeWorkItem(
             episode_url=build_episode_url(episode_summary.eid),
