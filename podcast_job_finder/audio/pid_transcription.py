@@ -9,11 +9,11 @@ from typing import Final, Sequence
 
 from podcast_job_finder.companies.episode_runner import EpisodeWorkItem
 from podcast_job_finder.llm import (
-    EmptyLlmResponseError,
     LlmRetryConfig,
+    LlmRuntimeConfig,
     OpenAiCompatibleConfig,
-    OpenAiCompatibleLlmError,
 )
+from podcast_job_finder.llm.rate_limit import LlmClientProtocol
 from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
@@ -23,9 +23,16 @@ from podcast_job_finder.audio import (
 )
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
-    AudioTranscriptionClientProtocol,
     AudioTranscriptionError,
     AudioTranscriptionResult,
+)
+from podcast_job_finder.audio.transcription_article import (
+    TRANSCRIPTION_ARTICLE_FILE_NAME,
+    save_transcription_article,
+)
+from podcast_job_finder.audio.transcription_formatter import (
+    EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
+    format_transcription_segments,
 )
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
@@ -64,11 +71,10 @@ EXPECTED_EPISODE_ERRORS = (
     AudioFileDecodeError,
     AudioSegmentExportError,
     AudioTranscriptionError,
-    EmptyLlmResponseError,
     EpisodeAudioDownloadError,
-    OpenAiCompatibleLlmError,
     OSError,
     ValueError,
+    *EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
 )
 
 
@@ -77,17 +83,34 @@ class PidAudioTranscriptionError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class PidAudioTranscriptionRuntime:
-    llm_client: AudioTranscriptionClientProtocol
+class LlmOperationRuntime:
+    client: LlmClientProtocol
     retry_config: LlmRetryConfig
-    llm_config: OpenAiCompatibleConfig
+    config: OpenAiCompatibleConfig
+
+    @classmethod
+    def from_runtime_config(
+        cls,
+        runtime: LlmRuntimeConfig,
+    ) -> LlmOperationRuntime:
+        return cls(
+            client=runtime.build_client(),
+            retry_config=runtime.retry_config,
+            config=runtime.client_config,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class PidAudioTranscriptionRuntime:
+    transcription_llm: LlmOperationRuntime
+    formatting_llm: LlmOperationRuntime
     vad_config: VadConfig = VadConfig()
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
 
     @property
     def runtime_signature(self) -> str:
         return build_audio_transcription_runtime_signature(
-            llm_config=self.llm_config,
+            llm_config=self.transcription_llm.config,
             vad_config=self.vad_config,
             silence_padding_ms=self.silence_padding_ms,
         )
@@ -106,6 +129,10 @@ class _EpisodeTranscriptionContext:
     work_item: EpisodeWorkItem
     eid: str
     transcription_path: Path
+
+    @property
+    def article_path(self) -> Path:
+        return self.transcription_path.with_name(TRANSCRIPTION_ARTICLE_FILE_NAME)
 
 
 def _build_segment_checkpoint_store(
@@ -170,8 +197,10 @@ def save_pid_audio_transcription_report(
     report = {
         "pid": pid,
         "source": "audio",
-        "model": runtime.llm_config.model,
-        "base_url": runtime.llm_config.base_url,
+        "model": runtime.transcription_llm.config.model,
+        "base_url": runtime.transcription_llm.config.base_url,
+        "formatting_model": runtime.formatting_llm.config.model,
+        "formatting_base_url": runtime.formatting_llm.config.base_url,
         "created_at": timestamp.text,
         "total": len(result.episode_results),
         "success": result.success_count,
@@ -267,9 +296,9 @@ def _transcribe_segments_with_checkpoints(
     )
     result, all_segments_cached = transcribe_speech_segments_with_checkpoints(
         exported_segments,
-        llm_client=runtime.llm_client,
+        llm_client=runtime.transcription_llm.client,
         checkpoint_store=checkpoint_store,
-        retry_config=runtime.retry_config,
+        retry_config=runtime.transcription_llm.retry_config,
     )
     return result, manifest_exists and all_segments_cached
 
@@ -284,6 +313,11 @@ def _save_episode_transcription(
 ) -> None:
     created_at = build_utc_timestamp().text
     segment_records = _build_segment_records(exported_segments, result)
+    formatted_article = format_transcription_segments(
+        result.segments,
+        llm_client=runtime.formatting_llm.client,
+        retry_config=runtime.formatting_llm.retry_config,
+    )
     payload = {
         "cache_version": TRANSCRIPTION_CACHE_VERSION,
         "runtime_signature": runtime.runtime_signature,
@@ -292,13 +326,18 @@ def _save_episode_transcription(
         "title": context.work_item.title,
         "pub_date": context.work_item.pub_date,
         "episode_url": context.work_item.episode_url,
-        "model": runtime.llm_config.model,
-        "base_url": runtime.llm_config.base_url,
-        "api_style": runtime.llm_config.api_style,
+        "model": runtime.transcription_llm.config.model,
+        "base_url": runtime.transcription_llm.config.base_url,
+        "api_style": runtime.transcription_llm.config.api_style,
+        "formatting_model": runtime.formatting_llm.config.model,
+        "formatting_base_url": runtime.formatting_llm.config.base_url,
+        "formatting_api_style": runtime.formatting_llm.config.api_style,
         "audio_path": str(download_result.local_path),
         "source_url": download_result.source_url,
         "created_at": created_at,
         "segment_count": len(segment_records),
+        "article_path": str(context.article_path),
+        "formatting": formatted_article.audit_dict(),
         "text": result.text,
         "segments": segment_records,
     }
@@ -317,6 +356,11 @@ def _save_episode_transcription(
                 error_message=str(error),
             )
         ) from error
+    save_transcription_article(
+        context.article_path,
+        title=context.work_item.title or context.eid,
+        body=formatted_article.text,
+    )
 
 
 def _build_segment_records(
@@ -357,6 +401,7 @@ def _build_success_record(
             "status": RESULT_STATUS_SUCCESS,
             "cached": cached,
             "transcription_path": str(context.transcription_path),
+            "article_path": str(context.article_path),
             "segment_directory": str(
                 context.transcription_path.parent / SEGMENT_DIR_NAME
             ),

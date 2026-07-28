@@ -8,10 +8,9 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.llm import (
-    EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
-    OpenAiCompatibleLlmError,
     load_audio_transcription_llm_runtime_config_from_env,
+    load_transcription_formatting_llm_runtime_config_from_env,
 )
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
@@ -27,6 +26,14 @@ from podcast_job_finder.audio.transcription_checkpoint import (
 )
 from podcast_job_finder.audio.transcription import (
     AudioTranscriptionError,
+)
+from podcast_job_finder.audio.transcription_article import (
+    TRANSCRIPTION_ARTICLE_FILE_NAME,
+    save_transcription_article,
+)
+from podcast_job_finder.audio.transcription_formatter import (
+    EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
+    format_transcription_segments,
 )
 
 
@@ -44,8 +51,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     args = _build_argument_parser().parse_args(argv)
     try:
-        llm_runtime = load_audio_transcription_llm_runtime_config_from_env()
-        config = llm_runtime.client_config
+        transcription_runtime = load_audio_transcription_llm_runtime_config_from_env()
+        formatting_runtime = load_transcription_formatting_llm_runtime_config_from_env()
         vad_config = VadConfig()
         exported_segments = detect_and_export_speech_segments(
             args.audio_path,
@@ -61,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         source_metadata = _build_local_audio_source_metadata(args.audio_path)
         checkpoint_store = SegmentTranscriptionCheckpointStore(
             runtime_signature=build_audio_transcription_runtime_signature(
-                llm_config=config,
+                llm_config=transcription_runtime.client_config,
                 vad_config=vad_config,
             ),
             metadata=source_metadata,
@@ -69,29 +76,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result, _ = transcribe_speech_segments_with_checkpoints(
             selected_segments,
-            llm_client=llm_runtime.build_client(),
+            llm_client=transcription_runtime.build_client(),
             checkpoint_store=checkpoint_store,
-            retry_config=llm_runtime.retry_config,
+            retry_config=transcription_runtime.retry_config,
             overwrite=args.overwrite,
+        )
+        article_path = args.output_dir / TRANSCRIPTION_ARTICLE_FILE_NAME
+        formatted_article = format_transcription_segments(
+            result.segments,
+            llm_client=formatting_runtime.build_client(),
+            retry_config=formatting_runtime.retry_config,
+        )
+        save_transcription_article(
+            article_path,
+            title=args.audio_path.stem,
+            body=formatted_article.text,
         )
     except (
         AudioFileDecodeError,
         AudioSegmentExportError,
         AudioTranscriptionError,
-        EmptyLlmResponseError,
         OpenAiCompatibleConfigError,
-        OpenAiCompatibleLlmError,
         OSError,
         ValueError,
+        *EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
     ) as error:
         print(str(error), file=sys.stderr)
         return 1
 
     payload = {
         "audio_path": str(args.audio_path),
-        "model": config.model,
+        "model": transcription_runtime.client_config.model,
+        "formatting_model": formatting_runtime.client_config.model,
         "available_segment_count": len(exported_segments),
         "transcribed_segment_count": len(selected_segments),
+        "article_path": str(article_path),
+        "formatting": formatted_article.audit_dict(),
         **result.to_dict(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

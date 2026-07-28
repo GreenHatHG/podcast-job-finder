@@ -23,6 +23,7 @@ from podcast_job_finder.llm.retry import (
 
 
 AUDIO_TRANSCRIPTION_LLM_ENV_PREFIX: Final = "LLM_AUDIO_TRANSCRIPTION"
+TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX: Final = "LLM_TRANSCRIPTION_FORMATTING"
 AUDIO_COMPANY_EXTRACTION_LLM_ENV_PREFIX: Final = "LLM_AUDIO_COMPANY_EXTRACTION"
 PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX: Final = "LLM_PAGE_COMPANY_EXTRACTION"
 AUDIO_TRANSCRIPTION_API_STYLE_ENV: Final = build_llm_env_name(
@@ -64,3 +65,7 @@ def load_audio_transcription_llm_runtime_config_from_env() -> LlmRuntimeConfig:
             )
         )
     return runtime
+
+
+def load_transcription_formatting_llm_runtime_config_from_env() -> LlmRuntimeConfig:
+    return load_llm_runtime_config_from_env(TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX)

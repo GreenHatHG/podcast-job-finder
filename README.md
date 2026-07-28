@@ -41,7 +41,7 @@ uv sync
 
 ## 配置大语言模型
 
-页面公司提取、音频转写和音频公司提取分别使用独立的大语言模型配置。
+页面公司提取、音频转写、转写文本整理和音频公司提取分别使用独立的大语言模型配置。
 
 例如创建一个不会提交到 Git 的 `.env` 文件：
 
@@ -62,6 +62,13 @@ LLM_AUDIO_TRANSCRIPTION_MODEL=your-transcription-model
 LLM_AUDIO_TRANSCRIPTION_API_STYLE=chat.completions
 # LLM_AUDIO_TRANSCRIPTION_BASE_URL=https://audio-provider.example/v1
 LLM_AUDIO_TRANSCRIPTION_RATE_PER_MINUTE=10
+
+# 转写文本整理，支持 responses 或 chat.completions
+LLM_TRANSCRIPTION_FORMATTING_API_KEY=your-formatting-api-key
+LLM_TRANSCRIPTION_FORMATTING_MODEL=your-formatting-model
+LLM_TRANSCRIPTION_FORMATTING_API_STYLE=responses
+# LLM_TRANSCRIPTION_FORMATTING_BASE_URL=https://provider.example/v1
+LLM_TRANSCRIPTION_FORMATTING_RATE_PER_MINUTE=10
 
 # 从音频转写文本提取公司
 LLM_AUDIO_COMPANY_EXTRACTION_API_KEY=your-audio-extraction-api-key
@@ -89,7 +96,7 @@ set +a
 - `EPISODE_PAGE_FETCH_RATE_PER_MINUTE`：批量页面公司提取中，小宇宙单集页面 HTTP 请求的每分钟上限。
 - `LOG_LEVEL`：日志级别，默认为 `INFO`。
 
-`<场景>` 支持 `PAGE_COMPANY_EXTRACTION`、`AUDIO_TRANSCRIPTION` 和 `AUDIO_COMPANY_EXTRACTION`。`pid --source page` 只需要页面公司提取配置；`pid --source audio` 需要音频转写和音频公司提取配置；`podcast-transcribe` 只需要音频转写配置。地址、密钥和模型相同时，可以在 `.env` 中引用前面定义的变量。
+`<场景>` 支持 `PAGE_COMPANY_EXTRACTION`、`AUDIO_TRANSCRIPTION`、`TRANSCRIPTION_FORMATTING` 和 `AUDIO_COMPANY_EXTRACTION`。`pid --source page` 只需要页面公司提取配置；`pid --source audio` 需要音频转写、转写文本整理和音频公司提取配置；`podcast-transcribe` 需要音频转写和转写文本整理配置；`podcast-merge-transcriptions` 只需要转写文本整理配置。地址、密钥和模型相同时，可以在 `.env` 中引用前面定义的变量。
 
 ## 使用方法
 

@@ -25,6 +25,9 @@ podcast-split-audio = "podcast_job_finder.cli.split_audio:main"
 # 切分本地音频并逐片段调用大语言模型转写，生成同名 JSON 检查点和完整 JSON 结果。
 # 支持缓存复用、限制片段数量和强制重写；模型接口范围为 chat.completions。
 podcast-transcribe = "podcast_job_finder.cli.transcribe:main"
+# 将已有的片段 JSON 或完整转写 JSON 交给转写模型整理，生成便于阅读的 Markdown 文章。
+# 该命令不读取音频，使用独立的 LLM_TRANSCRIPTION_FORMATTING 模型配置。
+podcast-merge-transcriptions = "podcast_job_finder.cli.merge_transcriptions:main"
 
 [build-system]
 requires = ["hatchling"]

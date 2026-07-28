@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, TypeGuard
 
 from podcast_job_finder.audio.transcription import TranscribedSpeechSegment
 
@@ -40,7 +40,7 @@ def load_episode_transcription_manifest(
     return EpisodeTranscriptionManifest(
         title=title,
         segments=tuple(
-            _parse_transcribed_segment(raw_segment, path=path, index=index)
+            parse_transcribed_segment(raw_segment, path=path, index=index)
             for index, raw_segment in enumerate(raw_segments)
         ),
     )
@@ -56,7 +56,7 @@ def _read_manifest_payload(path: Path) -> object:
         ) from error
 
 
-def _parse_transcribed_segment(
+def parse_transcribed_segment(
     payload: object,
     *,
     path: Path,
@@ -69,13 +69,13 @@ def _parse_transcribed_segment(
     start_ms = payload.get("start_ms")
     end_ms = payload.get("end_ms")
     text = payload.get("text")
-    if (
-        not isinstance(segment_index, int)
-        or not isinstance(start_ms, int)
-        or not isinstance(end_ms, int)
-        or not isinstance(text, str)
-        or not text.strip()
-    ):
+    if not _is_integer(segment_index):
+        raise _build_invalid_segment_error(path, index)
+    if not _is_integer(start_ms) or not _is_integer(end_ms):
+        raise _build_invalid_segment_error(path, index)
+    if start_ms < 0 or end_ms <= start_ms:
+        raise _build_invalid_segment_error(path, index)
+    if not isinstance(text, str) or not text.strip():
         raise _build_invalid_segment_error(path, index)
     return TranscribedSpeechSegment(
         index=segment_index,
@@ -83,6 +83,10 @@ def _parse_transcribed_segment(
         end_ms=end_ms,
         text=text.strip(),
     )
+
+
+def _is_integer(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _build_invalid_segment_error(
