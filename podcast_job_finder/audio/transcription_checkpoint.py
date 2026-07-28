@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+# pylint: disable=duplicate-code
+
 import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Final, Mapping, Sequence
 
-from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.segment_export import (
+    SEGMENT_AUDIO_BIT_RATE,
+    SEGMENT_AUDIO_CODEC,
+    SEGMENT_AUDIO_FORMAT,
+    ExportedSpeechSegment,
+)
+from podcast_job_finder.audio._pcm import PCM_CHANNELS
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
     TRANSCRIPTION_PROMPT_TEMPLATE,
@@ -15,14 +23,14 @@ from podcast_job_finder.audio.transcription import (
     TranscribedSpeechSegment,
     transcribe_speech_segment,
 )
-from podcast_job_finder.audio.vad import VadConfig
+from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, VadConfig
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
 from podcast_job_finder.llm import LlmRetryConfig, OpenAiCompatibleConfig
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
-TRANSCRIPTION_CACHE_VERSION: Final = 3
+TRANSCRIPTION_CACHE_VERSION: Final = 4
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +118,13 @@ def build_audio_transcription_runtime_signature(
         "prompt_template": TRANSCRIPTION_PROMPT_TEMPLATE,
         "vad_config": asdict(vad_config),
         "silence_padding_ms": silence_padding_ms,
+        "segment_audio": {
+            "format": SEGMENT_AUDIO_FORMAT,
+            "codec": SEGMENT_AUDIO_CODEC,
+            "bit_rate": SEGMENT_AUDIO_BIT_RATE,
+            "sample_rate": VAD_SAMPLE_RATE,
+            "channels": PCM_CHANNELS,
+        },
     }
     return build_runtime_signature_hash(signature_payload)
 

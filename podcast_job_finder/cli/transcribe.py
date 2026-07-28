@@ -20,12 +20,17 @@ from podcast_job_finder.audio import (
     detect_and_export_speech_segments,
 )
 from podcast_job_finder.audio.transcription_checkpoint import (
+    TRANSCRIPTION_CACHE_VERSION,
     SegmentTranscriptionCheckpointStore,
     build_audio_transcription_runtime_signature,
     transcribe_speech_segments_with_checkpoints,
 )
 from podcast_job_finder.audio.transcription import (
     AudioTranscriptionError,
+)
+from podcast_job_finder.audio.transcription_manifest import (
+    TRANSCRIPTION_FILE_NAME,
+    save_audio_transcription_manifest,
 )
 from podcast_job_finder.audio.transcription_article import (
     TRANSCRIPTION_ARTICLE_FILE_NAME,
@@ -38,7 +43,7 @@ from podcast_job_finder.audio.transcription_formatter import (
 
 
 PROGRAM_NAME: Final = "podcast-transcribe"
-DEFAULT_SEGMENT_OUTPUT_DIR: Final = Path("output/transcription_segments")
+DEFAULT_OUTPUT_DIR: Final = Path("output/transcription_segments")
 INVALID_MAX_SEGMENTS_ERROR: Final = "max_segments 必须大于 0。"
 LOCAL_AUDIO_SOURCE_TYPE: Final = "local_audio"
 
@@ -92,6 +97,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             title=args.audio_path.stem,
             body=formatted_article.text,
         )
+        payload = save_audio_transcription_manifest(
+            args.output_dir / TRANSCRIPTION_FILE_NAME,
+            metadata={
+                "cache_version": TRANSCRIPTION_CACHE_VERSION,
+                "runtime_signature": checkpoint_store.runtime_signature,
+                **source_metadata,
+                "audio_path": str(args.audio_path),
+                "model": transcription_runtime.client_config.model,
+                "base_url": transcription_runtime.client_config.base_url,
+                "api_style": transcription_runtime.client_config.api_style,
+                "formatting_model": formatting_runtime.client_config.model,
+                "formatting_base_url": formatting_runtime.client_config.base_url,
+                "formatting_api_style": formatting_runtime.client_config.api_style,
+                "available_segment_count": len(exported_segments),
+                "transcribed_segment_count": len(selected_segments),
+                "article_path": str(article_path),
+                "formatting": formatted_article.audit_dict(),
+            },
+            exported_segments=selected_segments,
+            result=result,
+        )
     except (
         AudioFileDecodeError,
         AudioSegmentExportError,
@@ -104,16 +130,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(str(error), file=sys.stderr)
         return 1
 
-    payload = {
-        "audio_path": str(args.audio_path),
-        "model": transcription_runtime.client_config.model,
-        "formatting_model": formatting_runtime.client_config.model,
-        "available_segment_count": len(exported_segments),
-        "transcribed_segment_count": len(selected_segments),
-        "article_path": str(article_path),
-        "formatting": formatted_article.audit_dict(),
-        **result.to_dict(),
-    }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 
@@ -124,7 +140,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_SEGMENT_OUTPUT_DIR,
+        default=DEFAULT_OUTPUT_DIR,
     )
     parser.add_argument("--max-segments", type=_parse_positive_integer)
     parser.add_argument("--overwrite", action="store_true")

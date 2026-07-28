@@ -13,11 +13,13 @@ from podcast_job_finder.llm import (
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
-from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.segment_export import (
+    SEGMENT_AUDIO_FORMAT,
+    ExportedSpeechSegment,
+)
 
 
 PREVIOUS_CONTEXT_MAX_CHARS: Final = 200
-WAV_AUDIO_FORMAT: Final[AudioFormat] = "wav"
 NO_PREVIOUS_CONTEXT_TEXT: Final = "无"
 TRANSCRIPTION_PROMPT_TEMPLATE: Final = """你是专业的中文音频转写助手。
 
@@ -147,7 +149,7 @@ def _transcribe_speech_segment(
         text, _ = execute_llm_with_retry(
             lambda: llm_client.transcribe_audio(
                 audio_data,
-                audio_format=WAV_AUDIO_FORMAT,
+                audio_format=SEGMENT_AUDIO_FORMAT,
                 prompt=prompt,
             ),
             retry_config=retry_config,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import wave
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Sequence
@@ -9,8 +9,12 @@ from typing import Final, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-from podcast_job_finder.audio._pcm import PCM_SAMPLE_WIDTH_BYTES
-from podcast_job_finder.audio.normalized_audio import NormalizedAudio
+from podcast_job_finder.audio._pcm import PCM_CHANNELS, PCM_SAMPLE_WIDTH_BYTES
+from podcast_job_finder.audio.normalized_audio import (
+    FFMPEG_EXECUTABLE,
+    FFMPEG_LOG_LEVEL,
+    NormalizedAudio,
+)
 from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, SpeechSegment
 from podcast_job_finder.filesystem import (
     AtomicWriteConflictError,
@@ -19,7 +23,14 @@ from podcast_job_finder.filesystem import (
 )
 
 
-SEGMENT_FILE_NAME_TEMPLATE: Final = "segment_{index:04d}_{start_time}_{end_time}.wav"
+SEGMENT_AUDIO_FORMAT: Final = "mp3"
+SEGMENT_AUDIO_EXTENSION: Final = f".{SEGMENT_AUDIO_FORMAT}"
+SEGMENT_AUDIO_CODEC: Final = "libmp3lame"
+SEGMENT_AUDIO_BIT_RATE: Final = "48k"
+PCM_INPUT_FORMAT: Final = "s16le"
+SEGMENT_FILE_NAME_TEMPLATE: Final = (
+    "segment_{index:04d}_{start_time}_{end_time}{extension}"
+)
 MILLISECONDS_PER_SECOND: Final = 1_000
 SECONDS_PER_MINUTE: Final = 60
 MINUTES_PER_HOUR: Final = 60
@@ -30,6 +41,7 @@ OUTPUT_DIR_ERROR: Final = "无法创建音频片段目录：{path}，{error_mess
 EXISTING_SEGMENT_ERROR: Final = "音频片段文件已经存在：{path}"
 EXPORT_SEGMENT_ERROR: Final = "无法导出音频片段：{path}，{error_message}"
 EMPTY_SEGMENT_ERROR: Final = "导出的音频片段没有声音数据：{path}"
+ENCODE_SEGMENT_ERROR: Final = "ffmpeg 无法编码音频片段：{path}，{error_message}"
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +60,7 @@ class ExportedSpeechSegment:
     # VAD 检测得到的精确采样范围。
     segment: SpeechSegment
 
-    # 片段完成导出后对应的 WAV 文件路径。
+    # 片段完成导出后对应的 MP3 文件路径。
     file_path: Path
 
     def to_dict(self) -> dict[str, int | str]:
@@ -113,6 +125,7 @@ def _prepare_exported_segments(
             index=index,
             start_time=_format_file_timestamp(segment.start_ms),
             end_time=_format_file_timestamp(segment.end_ms),
+            extension=SEGMENT_AUDIO_EXTENSION,
         )
         if target_path.exists() and not overwrite:
             raise AudioSegmentExportError(
@@ -157,7 +170,7 @@ def _export_segment_file(
     try:
         atomic_write_file(
             target_path,
-            write=lambda temporary_path: _write_wav_file(
+            write=lambda temporary_path: _write_mp3_file(
                 temporary_path,
                 segment_samples,
                 silence=silence,
@@ -184,27 +197,69 @@ def _build_silence(duration_ms: int) -> bytes:
     return bytes(sample_count * PCM_SAMPLE_WIDTH_BYTES)
 
 
-def _write_wav_file(
+def _write_mp3_file(
     output_path: Path,
     samples: NDArray[np.int16],
     *,
     silence: bytes,
 ) -> None:
     try:
-        with wave.Wave_write(str(output_path)) as output_file:
-            output_file.setnchannels(1)
-            output_file.setsampwidth(PCM_SAMPLE_WIDTH_BYTES)
-            output_file.setframerate(VAD_SAMPLE_RATE)
-            output_file.writeframesraw(silence)
-            output_file.writeframesraw(samples.tobytes())
-            output_file.writeframes(silence)
-    except (OSError, wave.Error) as error:
+        completed_process = subprocess.run(
+            _build_mp3_encode_command(output_path),
+            input=silence + samples.tobytes() + silence,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
         raise AudioSegmentExportError(
             EXPORT_SEGMENT_ERROR.format(
                 path=output_path,
                 error_message=str(error),
             )
         ) from error
+
+    if completed_process.returncode == 0:
+        return
+    error_message = completed_process.stderr.decode(errors="replace").strip()
+    raise AudioSegmentExportError(
+        ENCODE_SEGMENT_ERROR.format(
+            path=output_path,
+            error_message=error_message or completed_process.returncode,
+        )
+    )
+
+
+def _build_mp3_encode_command(output_path: Path) -> list[str]:
+    return [
+        FFMPEG_EXECUTABLE,
+        "-hide_banner",
+        "-loglevel",
+        FFMPEG_LOG_LEVEL,
+        "-nostdin",
+        "-f",
+        PCM_INPUT_FORMAT,
+        "-ar",
+        str(VAD_SAMPLE_RATE),
+        "-ac",
+        str(PCM_CHANNELS),
+        "-i",
+        "pipe:0",
+        "-map",
+        "0:a:0",
+        "-c:a",
+        SEGMENT_AUDIO_CODEC,
+        "-b:a",
+        SEGMENT_AUDIO_BIT_RATE,
+        "-ar",
+        str(VAD_SAMPLE_RATE),
+        "-ac",
+        str(PCM_CHANNELS),
+        "-f",
+        SEGMENT_AUDIO_FORMAT,
+        "-y",
+        str(output_path),
+    ]
 
 
 def _format_file_timestamp(timestamp_ms: int) -> str:
