@@ -9,8 +9,12 @@ from podcast_job_finder.audio.transcription import TranscribedSpeechSegment
 from podcast_job_finder.audio.transcription_format_audit import (
     FormattedChunk,
     FormattedTranscription,
+    SourceSegmentRange,
     TranscriptionFormattingValidationError,
     analyze_formatted_text,
+)
+from podcast_job_finder.audio.transcription_format_report import (
+    build_human_audit_report,
 )
 from podcast_job_finder.llm import (
     EmptyLlmResponseError,
@@ -70,7 +74,7 @@ EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS: Final = (
 @dataclass(slots=True, frozen=True)
 class _FormattingChunk:
     index: int
-    segment_indexes: tuple[int, ...]
+    segment_ranges: tuple[SourceSegmentRange, ...]
     current_text: str
     previous_context: str
     following_context: str
@@ -101,10 +105,7 @@ def format_transcription_segments(
     ]
 
     transcription = _merge_formatted_chunks(formatted_chunks)
-    logger.info(
-        "格式化审计结果：%s",
-        json.dumps(transcription.audit_dict(), ensure_ascii=False, indent=2),
-    )
+    logger.info("%s", build_human_audit_report(transcription))
     return transcription
 
 
@@ -131,11 +132,12 @@ def _build_formatting_chunks(
     for index, (start, end) in enumerate(ranges, start=1):
         context_start = max(0, start - FORMATTING_CONTEXT_SEGMENT_COUNT)
         context_end = min(len(segments), end + FORMATTING_CONTEXT_SEGMENT_COUNT)
+        current_text, segment_ranges = _build_chunk_text_and_ranges(segments[start:end])
         chunks.append(
             _FormattingChunk(
                 index=index,
-                segment_indexes=tuple(segment.index for segment in segments[start:end]),
-                current_text=_join_segment_texts(segments[start:end]),
+                segment_ranges=segment_ranges,
+                current_text=current_text,
                 previous_context=_build_context(
                     segments[context_start:start],
                     keep_end=True,
@@ -185,6 +187,29 @@ def _join_segment_texts(
     return "\n".join(segment.text.strip() for segment in segments)
 
 
+def _build_chunk_text_and_ranges(
+    segments: Sequence[TranscribedSpeechSegment],
+) -> tuple[str, tuple[SourceSegmentRange, ...]]:
+    text_parts: list[str] = []
+    segment_ranges: list[SourceSegmentRange] = []
+    current_position = 0
+    for segment in segments:
+        if text_parts:
+            current_position += 1
+        segment_text = segment.text.strip()
+        segment_start = current_position
+        text_parts.append(segment_text)
+        current_position += len(segment_text)
+        segment_ranges.append(
+            SourceSegmentRange(
+                index=segment.index,
+                start=segment_start,
+                end=current_position,
+            )
+        )
+    return "\n".join(text_parts), tuple(segment_ranges)
+
+
 def _build_context(
     segments: Sequence[TranscribedSpeechSegment],
     *,
@@ -218,7 +243,7 @@ def _format_chunk(
                 prompt=prompt,
                 original_text=chunk.current_text,
                 chunk_index=chunk.index,
-                source_segment_indexes=chunk.segment_indexes,
+                source_segment_ranges=chunk.segment_ranges,
             ),
             retry_config=retry_config,
             retryable_errors=(
@@ -259,12 +284,12 @@ def _generate_and_validate(
     prompt: str,
     original_text: str,
     chunk_index: int,
-    source_segment_indexes: Sequence[int],
+    source_segment_ranges: Sequence[SourceSegmentRange],
 ) -> FormattedChunk:
     formatted_text = llm_client.generate(prompt).strip()
     return analyze_formatted_text(
         original_text,
         formatted_text,
         chunk_index=chunk_index,
-        source_segment_indexes=source_segment_indexes,
+        source_segment_ranges=source_segment_ranges,
     )

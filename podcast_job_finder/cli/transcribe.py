@@ -123,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "transcribed_segment_count": len(selected_segments),
                 "article_path": str(article_path),
                 "formatted_article_path": str(formatted_article_path),
-                "formatting": formatted_article.audit_dict(),
+                "formatting": formatted_article.to_machine_audit_dict(),
             },
             exported_segments=selected_segments,
             result=result,

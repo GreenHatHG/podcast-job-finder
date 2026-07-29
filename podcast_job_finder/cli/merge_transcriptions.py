@@ -61,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model": formatting_runtime.client_config.model,
         "input_file_count": len(loaded_input.json_paths),
         "segment_count": len(loaded_input.segments),
-        "formatting": formatted_article.audit_dict(),
+        "formatting": formatted_article.to_machine_audit_dict(),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
