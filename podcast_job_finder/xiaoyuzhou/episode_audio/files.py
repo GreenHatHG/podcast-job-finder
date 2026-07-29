@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Final, Iterator
 
@@ -13,10 +15,18 @@ from podcast_job_finder.xiaoyuzhou.episode_audio.errors import (
 from podcast_job_finder.xiaoyuzhou.episode_audio.http import download_audio_content
 
 
+logger = logging.getLogger(__name__)
+
 SOURCE_FILE_STEM: Final = "source"
 PARTIAL_FILE_PREFIX: Final = ".source."
 PARTIAL_FILE_SUFFIX: Final = ".part"
 DOWNLOAD_LOCK_FILE_NAME: Final = ".download.lock"
+FILE_SIZE_UNIT_BASE: Final = 1024
+FILE_SIZE_UNITS: Final = ("B", "KiB", "MiB", "GiB", "TiB")
+LOCAL_DATETIME_FORMAT: Final = "%Y-%m-%d %H:%M:%S %z"
+REUSE_AUDIO_LOG_TEMPLATE: Final = (
+    "复用已有节目音频，跳过下载：path=%s size=%s bytes=%d modified_at=%s"
+)
 EMPTY_AUDIO_ERROR: Final = "下载到的节目音频为空：{url}"
 EXISTING_AUDIO_SYMLINK_ERROR: Final = "目标音频文件是符号链接，已拒绝操作：{path}"
 EXISTING_AUDIO_NOT_FILE_ERROR: Final = "目标音频路径不是普通文件：{path}"
@@ -191,7 +201,17 @@ def _should_skip_existing_file(target_path: Path, *, overwrite: bool) -> bool:
             )
         if overwrite:
             return False
-        if target_path.stat().st_size > 0:
+        file_stat = target_path.stat()
+        if file_stat.st_size > 0:
+            logger.info(
+                REUSE_AUDIO_LOG_TEMPLATE,
+                target_path,
+                _format_file_size(file_stat.st_size),
+                file_stat.st_size,
+                datetime.fromtimestamp(file_stat.st_mtime)
+                .astimezone()
+                .strftime(LOCAL_DATETIME_FORMAT),
+            )
             return True
 
         target_path.unlink()
@@ -203,6 +223,15 @@ def _should_skip_existing_file(target_path: Path, *, overwrite: bool) -> bool:
                 error_message=str(error),
             )
         ) from error
+
+
+def _format_file_size(size_bytes: int) -> str:
+    size = float(size_bytes)
+    for unit in FILE_SIZE_UNITS[:-1]:
+        if size < FILE_SIZE_UNIT_BASE:
+            return f"{size:.1f} {unit}"
+        size /= FILE_SIZE_UNIT_BASE
+    return f"{size:.1f} {FILE_SIZE_UNITS[-1]}"
 
 
 def _download_audio_file(
