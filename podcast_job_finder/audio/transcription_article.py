@@ -11,6 +11,7 @@ from podcast_job_finder.filesystem import (
 
 DEFAULT_ARTICLE_TITLE: Final = "音频转写"
 TRANSCRIPTION_ARTICLE_FILE_NAME: Final = "transcription.md"
+FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME: Final = "transcription_formatted.md"
 
 
 def save_transcription_article(

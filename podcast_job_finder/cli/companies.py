@@ -29,7 +29,6 @@ from podcast_job_finder.companies.runtime import (
 )
 from podcast_job_finder.llm import (
     load_audio_transcription_llm_runtime_config_from_env,
-    load_transcription_formatting_llm_runtime_config_from_env,
 )
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.xiaoyuzhou.episode_client import build_episode_url
@@ -297,12 +296,10 @@ def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
 
 def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
     transcription_runtime = load_audio_transcription_llm_runtime_config_from_env()
-    formatting_runtime = load_transcription_formatting_llm_runtime_config_from_env()
     return PidAudioTranscriptionRuntime(
         transcription_llm=LlmOperationRuntime.from_runtime_config(
             transcription_runtime
         ),
-        formatting_llm=LlmOperationRuntime.from_runtime_config(formatting_runtime),
     )
 
 

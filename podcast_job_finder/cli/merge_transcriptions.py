@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from podcast_job_finder.audio.transcription_article import (
-    TRANSCRIPTION_ARTICLE_FILE_NAME,
+    FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
 )
 from podcast_job_finder.audio.transcription_formatter import (
@@ -78,8 +78,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 def _build_default_output_path(json_paths: Sequence[Path]) -> Path:
     first_parent = json_paths[0].parent
     if all(path.parent == first_parent for path in json_paths):
-        return first_parent / TRANSCRIPTION_ARTICLE_FILE_NAME
-    return Path(TRANSCRIPTION_ARTICLE_FILE_NAME)
+        return first_parent / FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME
+    return Path(FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME)
 
 
 if __name__ == "__main__":

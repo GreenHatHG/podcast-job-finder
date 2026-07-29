@@ -33,6 +33,7 @@ from podcast_job_finder.audio.transcription_manifest import (
     save_audio_transcription_manifest,
 )
 from podcast_job_finder.audio.transcription_article import (
+    FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME,
     TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
 )
@@ -87,13 +88,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             overwrite=args.overwrite,
         )
         article_path = args.output_dir / TRANSCRIPTION_ARTICLE_FILE_NAME
+        formatted_article_path = (
+            args.output_dir / FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME
+        )
+        save_transcription_article(
+            article_path,
+            title=args.audio_path.stem,
+            body=result.text,
+        )
         formatted_article = format_transcription_segments(
             result.segments,
             llm_client=formatting_runtime.build_client(),
             retry_config=formatting_runtime.retry_config,
         )
         save_transcription_article(
-            article_path,
+            formatted_article_path,
             title=args.audio_path.stem,
             body=formatted_article.text,
         )
@@ -113,6 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "available_segment_count": len(exported_segments),
                 "transcribed_segment_count": len(selected_segments),
                 "article_path": str(article_path),
+                "formatted_article_path": str(formatted_article_path),
                 "formatting": formatted_article.audit_dict(),
             },
             exported_segments=selected_segments,

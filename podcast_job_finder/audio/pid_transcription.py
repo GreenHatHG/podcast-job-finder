@@ -30,10 +30,6 @@ from podcast_job_finder.audio.transcription_article import (
     TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
 )
-from podcast_job_finder.audio.transcription_formatter import (
-    EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
-    format_transcription_segments,
-)
 from podcast_job_finder.audio.transcription_manifest import (
     TRANSCRIPTION_FILE_NAME,
     save_audio_transcription_manifest,
@@ -76,7 +72,6 @@ EXPECTED_EPISODE_ERRORS = (
     EpisodeAudioDownloadError,
     OSError,
     ValueError,
-    *EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
 )
 
 
@@ -105,7 +100,6 @@ class LlmOperationRuntime:
 @dataclass(slots=True, frozen=True)
 class PidAudioTranscriptionRuntime:
     transcription_llm: LlmOperationRuntime
-    formatting_llm: LlmOperationRuntime
     vad_config: VadConfig = VadConfig()
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
 
@@ -201,8 +195,6 @@ def save_pid_audio_transcription_report(
         "source": "audio",
         "model": runtime.transcription_llm.config.model,
         "base_url": runtime.transcription_llm.config.base_url,
-        "formatting_model": runtime.formatting_llm.config.model,
-        "formatting_base_url": runtime.formatting_llm.config.base_url,
         "created_at": timestamp.text,
         "total": len(result.episode_results),
         "success": result.success_count,
@@ -313,15 +305,10 @@ def _save_episode_transcription(
     result: AudioTranscriptionResult,
     exported_segments: Sequence[ExportedSpeechSegment],
 ) -> None:
-    formatted_article = format_transcription_segments(
-        result.segments,
-        llm_client=runtime.formatting_llm.client,
-        retry_config=runtime.formatting_llm.retry_config,
-    )
     save_transcription_article(
         context.article_path,
         title=context.work_item.title or context.eid,
-        body=formatted_article.text,
+        body=result.text,
     )
     save_audio_transcription_manifest(
         context.transcription_path,
@@ -336,13 +323,9 @@ def _save_episode_transcription(
             "model": runtime.transcription_llm.config.model,
             "base_url": runtime.transcription_llm.config.base_url,
             "api_style": runtime.transcription_llm.config.api_style,
-            "formatting_model": runtime.formatting_llm.config.model,
-            "formatting_base_url": runtime.formatting_llm.config.base_url,
-            "formatting_api_style": runtime.formatting_llm.config.api_style,
             "audio_path": str(download_result.local_path),
             "source_url": download_result.source_url,
             "article_path": str(context.article_path),
-            "formatting": formatted_article.audit_dict(),
         },
         exported_segments=exported_segments,
         result=result,
