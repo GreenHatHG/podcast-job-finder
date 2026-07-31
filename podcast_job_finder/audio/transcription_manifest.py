@@ -9,6 +9,7 @@ from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
 from podcast_job_finder.audio.transcription import (
     AudioTranscriptionResult,
     TranscribedSpeechSegment,
+    parse_timed_transcription_texts,
 )
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
 from podcast_job_finder.timestamps import build_utc_timestamp
@@ -96,14 +97,11 @@ def _build_segment_records(
             )
         records.append(
             {
-                "index": transcribed_segment.index,
-                "start_ms": transcribed_segment.start_ms,
-                "end_ms": transcribed_segment.end_ms,
+                **transcribed_segment.to_dict(),
                 "audio_path": str(exported_segment.file_path),
                 "transcription_path": str(
                     exported_segment.file_path.with_suffix(".json")
                 ),
-                "text": transcribed_segment.text,
             }
         )
     return records
@@ -140,12 +138,23 @@ def parse_transcribed_segment(
         raise _build_invalid_segment_error(path, index)
     if not isinstance(text, str) or not text.strip():
         raise _build_invalid_segment_error(path, index)
-    return TranscribedSpeechSegment(
-        index=segment_index,
-        start_ms=start_ms,
-        end_ms=end_ms,
-        text=text.strip(),
-    )
+    try:
+        return TranscribedSpeechSegment(
+            index=segment_index,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            text=text.strip(),
+            character_timestamps=parse_timed_transcription_texts(
+                payload.get("character_timestamps"),
+                field_name="character_timestamps",
+            ),
+            sentences=parse_timed_transcription_texts(
+                payload.get("sentences"),
+                field_name="sentences",
+            ),
+        )
+    except ValueError as error:
+        raise _build_invalid_segment_error(path, index) from error
 
 
 def _is_integer(value: object) -> TypeGuard[int]:

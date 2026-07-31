@@ -12,6 +12,13 @@ from podcast_job_finder.audio import (
     detect_and_export_speech_segments,
 )
 from podcast_job_finder.logging import configure_logging
+from podcast_job_finder.audio.segment_export import (
+    DEFAULT_SEGMENT_AUDIO_FORMAT,
+    SUPPORTED_SEGMENT_AUDIO_FORMATS,
+    SpeechSegmentExportConfig,
+    parse_segment_audio_format,
+)
+from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 
 
 PROGRAM_NAME: Final = "podcast-split-audio"
@@ -25,7 +32,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         segments = detect_and_export_speech_segments(
             args.audio_path,
             output_dir=args.output_dir,
-            overwrite=args.overwrite,
+            export_config=SpeechSegmentExportConfig(
+                silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
+                audio_format=parse_segment_audio_format(args.segment_audio_format),
+                overwrite=args.overwrite,
+            ),
         )
     except (AudioFileDecodeError, AudioSegmentExportError, ValueError) as error:
         print(str(error), file=sys.stderr)
@@ -50,6 +61,11 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=DEFAULT_OUTPUT_DIR,
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--segment-audio-format",
+        choices=sorted(SUPPORTED_SEGMENT_AUDIO_FORMATS),
+        default=DEFAULT_SEGMENT_AUDIO_FORMAT,
+    )
     return parser
 
 

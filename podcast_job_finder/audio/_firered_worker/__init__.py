@@ -1,0 +1,1 @@
+"""Optional FireRed worker implementation."""

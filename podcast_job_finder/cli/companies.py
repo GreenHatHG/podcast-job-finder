@@ -27,9 +27,6 @@ from podcast_job_finder.companies.runtime import (
     load_audio_extraction_runtime_from_env,
     load_page_extraction_runtime_from_env,
 )
-from podcast_job_finder.llm import (
-    load_audio_transcription_llm_runtime_config_from_env,
-)
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.xiaoyuzhou.episode_client import build_episode_url
 from podcast_job_finder.xiaoyuzhou.xyz.auth_store import (
@@ -46,11 +43,14 @@ from podcast_job_finder.xiaoyuzhou.xyz.client import (
 )
 from podcast_job_finder.xiaoyuzhou.xyz.podcast_service import list_podcast_episodes
 from podcast_job_finder.audio.pid_transcription import (
-    LlmOperationRuntime,
     PidAudioTranscriptionError,
     PidAudioTranscriptionRuntime,
     run_pid_audio_transcription,
     save_pid_audio_transcription_report,
+)
+from podcast_job_finder.audio.transcription_runtime import (
+    AudioTranscriptionConfigError,
+    load_audio_transcription_runtime_from_env,
 )
 
 
@@ -62,7 +62,8 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
         (
             f"      {PROGRAM_NAME} pid --pid <pid> [--all] "
-            "[--max-episodes <正整数>] [--source page|audio]"
+            "[--max-episodes <正整数>] [--source page|audio] "
+            "[--transcribe-only]"
         ),
     ]
 )
@@ -83,6 +84,9 @@ SUPPORTED_COMMANDS: Final = frozenset(
 )
 XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
 SUCCESS_STATUS_TEXT: Final = "ok"
+TRANSCRIBE_ONLY_SOURCE_ERROR: Final = (
+    "--transcribe-only 只能与 --source audio 一起使用。"
+)
 
 
 class CliUsageError(ValueError):
@@ -91,6 +95,7 @@ class CliUsageError(ValueError):
 
 EXPECTED_CLI_ERRORS: Final = (
     CliUsageError,
+    AudioTranscriptionConfigError,
     PidAudioTranscriptionError,
     XiaoyuzhouAuthStoreError,
     XyzClientError,
@@ -159,6 +164,7 @@ def _build_command_parser() -> argparse.ArgumentParser:
         choices=SUPPORTED_PID_SOURCES,
         default=PAGE_SOURCE,
     )
+    pid_parser.add_argument("--transcribe-only", action="store_true")
     return parser
 
 
@@ -207,6 +213,8 @@ def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> i
 
 
 def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
+    if parsed_args.transcribe_only and parsed_args.source != AUDIO_SOURCE:
+        raise CliUsageError(TRANSCRIBE_ONLY_SOURCE_ERROR)
     auth_session = load_auth_session()
     logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
     episodes = list_podcast_episodes(
@@ -229,7 +237,11 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
         for episode_summary in episodes
     ]
     if parsed_args.source == AUDIO_SOURCE:
-        return _run_pid_audio_mode(parsed_args.pid, work_items)
+        return _run_pid_audio_mode(
+            parsed_args.pid,
+            work_items,
+            transcribe_only=parsed_args.transcribe_only,
+        )
     return _run_pid_page_mode(parsed_args.pid, work_items)
 
 
@@ -258,22 +270,32 @@ def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
     return 1 if pipeline_result.fail_count > 0 else 0
 
 
-def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+def _run_pid_audio_mode(
+    pid: str,
+    work_items: Sequence[EpisodeWorkItem],
+    *,
+    transcribe_only: bool,
+) -> int:
     transcription_runtime = _load_audio_transcription_runtime()
-    extraction_runtime = load_audio_extraction_runtime_from_env()
-    transcription_result = run_pid_audio_transcription(
-        pid=pid,
-        work_items=work_items,
-        runtime=transcription_runtime,
-    )
-    report_path = save_pid_audio_transcription_report(
-        pid=pid,
-        runtime=transcription_runtime,
-        result=transcription_result,
-        output_dir=Path("output"),
-    )
+    try:
+        transcription_result = run_pid_audio_transcription(
+            pid=pid,
+            work_items=work_items,
+            runtime=transcription_runtime,
+        )
+        report_path = save_pid_audio_transcription_report(
+            pid=pid,
+            runtime=transcription_runtime,
+            result=transcription_result,
+            output_dir=Path("output"),
+        )
+    finally:
+        transcription_runtime.close()
     logger.info("音频转写批次报告已保存到 %s", report_path)
+    if transcribe_only:
+        return 1 if transcription_result.fail_count > 0 else 0
 
+    extraction_runtime = load_audio_extraction_runtime_from_env()
     extraction_result = run_pid_audio_company_extraction(
         transcription_result=transcription_result,
         runtime=extraction_runtime,
@@ -295,11 +317,8 @@ def _run_pid_audio_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
 
 
 def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
-    transcription_runtime = load_audio_transcription_llm_runtime_config_from_env()
     return PidAudioTranscriptionRuntime(
-        transcription_llm=LlmOperationRuntime.from_runtime_config(
-            transcription_runtime
-        ),
+        transcription=load_audio_transcription_runtime_from_env(),
     )
 
 

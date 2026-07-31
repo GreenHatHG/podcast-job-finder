@@ -9,28 +9,25 @@ from pathlib import Path
 from typing import Final, Mapping, Sequence
 
 from podcast_job_finder.audio.segment_export import (
-    SEGMENT_AUDIO_BIT_RATE,
-    SEGMENT_AUDIO_CODEC,
-    SEGMENT_AUDIO_FORMAT,
     ExportedSpeechSegment,
+    SegmentAudioFormat,
+    build_segment_audio_signature,
 )
-from podcast_job_finder.audio._pcm import PCM_CHANNELS
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
-    TRANSCRIPTION_PROMPT_TEMPLATE,
-    AudioTranscriptionClientProtocol,
+    AudioTranscriberProtocol,
     AudioTranscriptionResult,
     TranscribedSpeechSegment,
+    parse_timed_transcription_texts,
     transcribe_speech_segment,
 )
-from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, VadConfig
+from podcast_job_finder.audio.vad import VadConfig
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
-from podcast_job_finder.llm import LlmRetryConfig, OpenAiCompatibleConfig
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
-TRANSCRIPTION_CACHE_VERSION: Final = 4
+TRANSCRIPTION_CACHE_VERSION: Final = 5
 
 logger = logging.getLogger(__name__)
 
@@ -46,27 +43,22 @@ class SegmentTranscriptionCheckpointStore:
         path: Path,
         *,
         exported_segment: ExportedSpeechSegment,
-        previous_text: str,
+        previous_segment: TranscribedSpeechSegment | None,
     ) -> TranscribedSpeechSegment | None:
         if not path.exists():
             return None
         try:
             payload = _read_json_object(path)
-            text = _validate_checkpoint_payload(
+            cached_segment = _validate_checkpoint_payload(
                 payload,
-                self._expected_values(exported_segment, previous_text),
+                self._expected_values(exported_segment, previous_segment),
             )
         except (OSError, ValueError, json.JSONDecodeError) as error:
             logger.warning(
                 "读取音频片段检查点失败，将重新转写：path=%s error=%s", path, error
             )
             return None
-        return TranscribedSpeechSegment(
-            index=exported_segment.index,
-            start_ms=exported_segment.segment.start_ms,
-            end_ms=exported_segment.segment.end_ms,
-            text=text,
-        )
+        return cached_segment
 
     def save(
         self,
@@ -74,14 +66,17 @@ class SegmentTranscriptionCheckpointStore:
         *,
         exported_segment: ExportedSpeechSegment,
         transcribed_segment: TranscribedSpeechSegment,
-        previous_text: str,
+        previous_segment: TranscribedSpeechSegment | None,
     ) -> None:
         payload = {
             **self.metadata,
             "cache_version": TRANSCRIPTION_CACHE_VERSION,
             "runtime_signature": self.runtime_signature,
             "created_at": build_utc_timestamp().text,
-            "previous_text_signature": _build_previous_text_signature(previous_text),
+            # 当前片段会参考上一片段；上一片段变化时，这个签名会让缓存重新生成。
+            "previous_segment_signature": _build_previous_segment_signature(
+                previous_segment
+            ),
             "audio_path": str(exported_segment.file_path),
             **transcribed_segment.to_dict(),
         }
@@ -90,7 +85,7 @@ class SegmentTranscriptionCheckpointStore:
     def _expected_values(
         self,
         exported_segment: ExportedSpeechSegment,
-        previous_text: str,
+        previous_segment: TranscribedSpeechSegment | None,
     ) -> dict[str, object]:
         return {
             "cache_version": TRANSCRIPTION_CACHE_VERSION,
@@ -100,31 +95,25 @@ class SegmentTranscriptionCheckpointStore:
             "start_ms": exported_segment.segment.start_ms,
             "end_ms": exported_segment.segment.end_ms,
             "audio_path": str(exported_segment.file_path),
-            "previous_text_signature": _build_previous_text_signature(previous_text),
+            "previous_segment_signature": _build_previous_segment_signature(
+                previous_segment
+            ),
         }
 
 
 def build_audio_transcription_runtime_signature(
     *,
-    llm_config: OpenAiCompatibleConfig,
+    transcriber_signature: Mapping[str, object],
+    segment_audio_format: SegmentAudioFormat,
     vad_config: VadConfig = VadConfig(),
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
 ) -> str:
     signature_payload = {
         "cache_version": TRANSCRIPTION_CACHE_VERSION,
-        "model": llm_config.model,
-        "base_url": llm_config.base_url,
-        "api_style": llm_config.api_style,
-        "prompt_template": TRANSCRIPTION_PROMPT_TEMPLATE,
+        "transcriber": dict(transcriber_signature),
         "vad_config": asdict(vad_config),
         "silence_padding_ms": silence_padding_ms,
-        "segment_audio": {
-            "format": SEGMENT_AUDIO_FORMAT,
-            "codec": SEGMENT_AUDIO_CODEC,
-            "bit_rate": SEGMENT_AUDIO_BIT_RATE,
-            "sample_rate": VAD_SAMPLE_RATE,
-            "channels": PCM_CHANNELS,
-        },
+        "segment_audio": build_segment_audio_signature(segment_audio_format),
     }
     return build_runtime_signature_hash(signature_payload)
 
@@ -132,13 +121,13 @@ def build_audio_transcription_runtime_signature(
 def transcribe_speech_segments_with_checkpoints(
     segments: Sequence[ExportedSpeechSegment],
     *,
-    llm_client: AudioTranscriptionClientProtocol,
+    transcriber: AudioTranscriberProtocol,
     checkpoint_store: SegmentTranscriptionCheckpointStore,
-    retry_config: LlmRetryConfig | None = None,
     overwrite: bool = False,
 ) -> tuple[AudioTranscriptionResult, bool]:
     transcribed_segments: list[TranscribedSpeechSegment] = []
-    previous_text = ""
+    # 保留上一段的完整结果：下一段既可能用到文字，也可能用到时间信息。
+    previous_segment = None
     all_segments_cached = bool(segments)
     for segment in segments:
         transcription_path = segment.file_path.with_suffix(".json")
@@ -147,21 +136,20 @@ def transcribe_speech_segments_with_checkpoints(
             transcribed_segment = checkpoint_store.load(
                 transcription_path,
                 exported_segment=segment,
-                previous_text=previous_text,
+                previous_segment=previous_segment,
             )
         if transcribed_segment is None:
             all_segments_cached = False
             transcribed_segment = transcribe_speech_segment(
                 segment,
-                llm_client=llm_client,
-                previous_text=previous_text,
-                retry_config=retry_config,
+                transcriber=transcriber,
+                previous_segment=previous_segment,
             )
             checkpoint_store.save(
                 transcription_path,
                 exported_segment=segment,
                 transcribed_segment=transcribed_segment,
-                previous_text=previous_text,
+                previous_segment=previous_segment,
             )
         else:
             logger.info(
@@ -170,7 +158,7 @@ def transcribe_speech_segments_with_checkpoints(
                 segment.index,
             )
         transcribed_segments.append(transcribed_segment)
-        previous_text = transcribed_segment.text
+        previous_segment = transcribed_segment
     return (
         AudioTranscriptionResult(segments=transcribed_segments),
         all_segments_cached,
@@ -188,15 +176,40 @@ def _read_json_object(path: Path) -> dict[str, object]:
 def _validate_checkpoint_payload(
     payload: dict[str, object],
     expected_values: dict[str, object],
-) -> str:
+) -> TranscribedSpeechSegment:
     for field_name, expected_value in expected_values.items():
         if payload.get(field_name) != expected_value:
             raise ValueError(f"音频片段检查点字段 {field_name} 已变化。")
     text = payload.get("text")
     if not isinstance(text, str):
         raise ValueError("音频片段检查点中的 text 必须是字符串。")
-    return text
+    # 完整恢复文字和时间信息，缓存片段才能继续作为下一段的参考。
+    return TranscribedSpeechSegment(
+        index=_require_integer(payload, "index"),
+        start_ms=_require_integer(payload, "start_ms"),
+        end_ms=_require_integer(payload, "end_ms"),
+        text=text,
+        character_timestamps=parse_timed_transcription_texts(
+            payload.get("character_timestamps"),
+            field_name="character_timestamps",
+        ),
+        sentences=parse_timed_transcription_texts(
+            payload.get("sentences"),
+            field_name="sentences",
+        ),
+    )
 
 
-def _build_previous_text_signature(previous_text: str) -> str:
-    return build_runtime_signature_hash({"previous_text": previous_text})
+def _build_previous_segment_signature(
+    previous_segment: TranscribedSpeechSegment | None,
+) -> str:
+    return build_runtime_signature_hash(
+        previous_segment.to_dict() if previous_segment is not None else None
+    )
+
+
+def _require_integer(payload: dict[str, object], field_name: str) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"音频片段检查点中的 {field_name} 必须是整数。")
+    return value

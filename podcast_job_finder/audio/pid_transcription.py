@@ -8,12 +8,6 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from podcast_job_finder.companies.episode_runner import EpisodeWorkItem
-from podcast_job_finder.llm import (
-    LlmRetryConfig,
-    LlmRuntimeConfig,
-    OpenAiCompatibleConfig,
-)
-from podcast_job_finder.llm.rate_limit import LlmClientProtocol
 from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
@@ -22,10 +16,15 @@ from podcast_job_finder.audio import (
     detect_and_export_speech_segments,
 )
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
+from podcast_job_finder.audio.segment_export import (
+    SegmentAudioFormat,
+    SpeechSegmentExportConfig,
+)
 from podcast_job_finder.audio.transcription import (
     AudioTranscriptionError,
     AudioTranscriptionResult,
 )
+from podcast_job_finder.audio.transcription_runtime import AudioTranscriptionRuntime
 from podcast_job_finder.audio.transcription_article import (
     TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
@@ -80,36 +79,26 @@ class PidAudioTranscriptionError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class LlmOperationRuntime:
-    client: LlmClientProtocol
-    retry_config: LlmRetryConfig
-    config: OpenAiCompatibleConfig
-
-    @classmethod
-    def from_runtime_config(
-        cls,
-        runtime: LlmRuntimeConfig,
-    ) -> LlmOperationRuntime:
-        return cls(
-            client=runtime.build_client(),
-            retry_config=runtime.retry_config,
-            config=runtime.client_config,
-        )
-
-
-@dataclass(slots=True, frozen=True)
 class PidAudioTranscriptionRuntime:
-    transcription_llm: LlmOperationRuntime
+    transcription: AudioTranscriptionRuntime
     vad_config: VadConfig = VadConfig()
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
 
     @property
+    def segment_audio_format(self) -> SegmentAudioFormat:
+        return self.transcription.segment_audio_format
+
+    @property
     def runtime_signature(self) -> str:
         return build_audio_transcription_runtime_signature(
-            llm_config=self.transcription_llm.config,
+            transcriber_signature=self.transcription.signature_payload,
+            segment_audio_format=self.segment_audio_format,
             vad_config=self.vad_config,
             silence_padding_ms=self.silence_padding_ms,
         )
+
+    def close(self) -> None:
+        self.transcription.close()
 
 
 @dataclass(slots=True, frozen=True)
@@ -193,8 +182,8 @@ def save_pid_audio_transcription_report(
     report = {
         "pid": pid,
         "source": "audio",
-        "model": runtime.transcription_llm.config.model,
-        "base_url": runtime.transcription_llm.config.base_url,
+        **runtime.transcription.metadata,
+        "segment_audio_format": runtime.segment_audio_format,
         "created_at": timestamp.text,
         "total": len(result.episode_results),
         "success": result.success_count,
@@ -250,8 +239,11 @@ def _run_episode_audio_transcription(
             download_result.local_path,
             output_dir=episode_output_dir / SEGMENT_DIR_NAME,
             config=runtime.vad_config,
-            silence_padding_ms=runtime.silence_padding_ms,
-            overwrite=True,
+            export_config=SpeechSegmentExportConfig(
+                silence_padding_ms=runtime.silence_padding_ms,
+                audio_format=runtime.segment_audio_format,
+                overwrite=True,
+            ),
         )
         transcription_result, all_segments_cached = (
             _transcribe_segments_with_checkpoints(
@@ -290,9 +282,8 @@ def _transcribe_segments_with_checkpoints(
     )
     result, all_segments_cached = transcribe_speech_segments_with_checkpoints(
         exported_segments,
-        llm_client=runtime.transcription_llm.client,
+        transcriber=runtime.transcription.transcriber,
         checkpoint_store=checkpoint_store,
-        retry_config=runtime.transcription_llm.retry_config,
     )
     return result, manifest_exists and all_segments_cached
 
@@ -320,9 +311,8 @@ def _save_episode_transcription(
             "title": context.work_item.title,
             "pub_date": context.work_item.pub_date,
             "episode_url": context.work_item.episode_url,
-            "model": runtime.transcription_llm.config.model,
-            "base_url": runtime.transcription_llm.config.base_url,
-            "api_style": runtime.transcription_llm.config.api_style,
+            **runtime.transcription.metadata,
+            "segment_audio_format": runtime.segment_audio_format,
             "audio_path": str(download_result.local_path),
             "source_url": download_result.source_url,
             "article_path": str(context.article_path),
