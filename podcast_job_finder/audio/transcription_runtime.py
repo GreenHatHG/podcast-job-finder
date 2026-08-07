@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Mapping
 
-from podcast_job_finder.audio.firered_transcriber import (
+from podcast_job_finder.audio.doubao.config import (
+    DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
+    DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
+    DoubaoTranscriberConfig,
+)
+from podcast_job_finder.audio.doubao.transcriber import DoubaoAudioTranscriber
+from podcast_job_finder.audio.firered_alignment import FireRedAlignmentConfig
+from podcast_job_finder.audio.firered_config import (
     DEFAULT_ORT_INTRA_OP_THREADS,
     DEFAULT_ORT_PROVIDER,
+)
+from podcast_job_finder.audio.firered_transcriber import (
     FireRedAudioTranscriber,
     FireRedTranscriberConfig,
 )
@@ -22,6 +32,7 @@ from podcast_job_finder.audio.segment_export import (
 )
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import AudioTranscriberProtocol
+from podcast_job_finder.audio.vad import VadConfig
 from podcast_job_finder.llm import (
     load_audio_transcription_llm_runtime_config_from_env,
 )
@@ -35,10 +46,15 @@ FIRERED_ORT_PROVIDER_ENV: Final = "FIRERED_ORT_PROVIDER"
 FIRERED_ORT_INTRA_OP_THREADS_ENV: Final = "FIRERED_ORT_INTRA_OP_THREADS"
 LLM_BACKEND: Final = "llm"
 FIRERED_BACKEND: Final = "firered"
+DOUBAO_BACKEND: Final = "doubao"
+DOUBAO_MAX_IN_FLIGHT_REQUESTS_ENV: Final = "DOUBAO_ASR_MAX_IN_FLIGHT_REQUESTS"
+DOUBAO_REQUEST_INTERVAL_ENV: Final = "DOUBAO_ASR_REQUEST_INTERVAL_SECONDS"
+DOUBAO_MAX_INPUT_AUDIO_DURATION_MS: Final = 20_000
 INVALID_BACKEND_ERROR: Final = (
-    "AUDIO_TRANSCRIPTION_BACKEND 必须是 llm 或 firered：{backend}"
+    "AUDIO_TRANSCRIPTION_BACKEND 必须是 llm、firered 或 doubao：{backend}"
 )
 INVALID_INTEGER_ENV_ERROR: Final = "{name} 必须是整数：{value}"
+INVALID_FLOAT_ENV_ERROR: Final = "{name} 必须是有限数值：{value}"
 FIRERED_PYTHON_NOT_FOUND_ERROR: Final = (
     "未找到 FireRed Python 解释器，已检查：{candidates}。"
     "请创建对应的虚拟环境或设置 {environment_variable}。"
@@ -57,11 +73,11 @@ class AudioTranscriptionConfigError(ValueError):
 
 @dataclass(slots=True)
 class AudioTranscriptionRuntime:
-    backend_name: str
     transcriber: AudioTranscriberProtocol
     metadata: Mapping[str, object]
     signature_payload: Mapping[str, object]
     segment_audio_format: SegmentAudioFormat
+    vad_config: VadConfig = VadConfig()
 
     def close(self) -> None:
         self.transcriber.close()
@@ -78,6 +94,8 @@ def load_audio_transcription_runtime_from_env(
         return _load_llm_runtime()
     if backend == FIRERED_BACKEND:
         return _load_firered_runtime(silence_padding_ms=silence_padding_ms)
+    if backend == DOUBAO_BACKEND:
+        return _load_doubao_runtime(silence_padding_ms=silence_padding_ms)
     raise AudioTranscriptionConfigError(INVALID_BACKEND_ERROR.format(backend=backend))
 
 
@@ -91,7 +109,6 @@ def _load_llm_runtime() -> AudioTranscriptionRuntime:
         "api_style": config.api_style,
     }
     return AudioTranscriptionRuntime(
-        backend_name=LLM_BACKEND,
         transcriber=LlmAudioTranscriber(
             runtime.build_client(),
             retry_config=runtime.retry_config,
@@ -124,11 +141,72 @@ def _load_firered_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRunti
         silence_padding_ms=silence_padding_ms,
     )
     return AudioTranscriptionRuntime(
-        backend_name=FIRERED_BACKEND,
         transcriber=FireRedAudioTranscriber(config),
         metadata=config.metadata(),
         signature_payload=config.signature_payload(),
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
+    )
+
+
+def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntime:
+    vad_config = _build_doubao_vad_config(silence_padding_ms)
+    config = DoubaoTranscriberConfig(
+        alignment_config=FireRedAlignmentConfig(
+            python_executable=_load_firered_python(),
+            asr_model_dir=_load_optional_path_env(
+                FIRERED_ASR_MODEL_DIR_ENV,
+                FIRERED_ASR_MODEL_RELATIVE_PATH,
+            ),
+            ort_provider=os.environ.get(
+                FIRERED_ORT_PROVIDER_ENV,
+                DEFAULT_ORT_PROVIDER,
+            ),
+            ort_intra_op_threads=_load_integer_env(
+                FIRERED_ORT_INTRA_OP_THREADS_ENV,
+                DEFAULT_ORT_INTRA_OP_THREADS,
+            ),
+        ),
+        max_in_flight_requests=_load_integer_env(
+            DOUBAO_MAX_IN_FLIGHT_REQUESTS_ENV,
+            DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
+        ),
+        request_interval_seconds=_load_float_env(
+            DOUBAO_REQUEST_INTERVAL_ENV,
+            DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
+        ),
+        silence_padding_ms=silence_padding_ms,
+        vad_threshold=vad_config.threshold,
+    )
+    metadata = {
+        **config.metadata(),
+        "max_input_audio_duration_ms": DOUBAO_MAX_INPUT_AUDIO_DURATION_MS,
+        "min_speech_duration_ms": vad_config.min_speech_duration_ms,
+        "max_speech_duration_ms": vad_config.max_speech_duration_ms,
+        "forced_split_overlap_ms": vad_config.forced_split_overlap_ms,
+        "min_silence_duration_ms": vad_config.min_silence_duration_ms,
+    }
+    return AudioTranscriptionRuntime(
+        transcriber=DoubaoAudioTranscriber(config),
+        metadata=metadata,
+        signature_payload=config.signature_payload(),
+        segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
+        vad_config=vad_config,
+    )
+
+
+def _build_doubao_vad_config(silence_padding_ms: int) -> VadConfig:
+    default_config = VadConfig()
+    max_speech_duration_ms = (
+        DOUBAO_MAX_INPUT_AUDIO_DURATION_MS
+        - 2 * silence_padding_ms
+        - default_config.forced_split_overlap_ms
+    )
+    return VadConfig(
+        min_speech_duration_ms=min(
+            default_config.min_speech_duration_ms,
+            max_speech_duration_ms,
+        ),
+        max_speech_duration_ms=max_speech_duration_ms,
     )
 
 
@@ -178,3 +256,20 @@ def _load_integer_env(name: str, default: int) -> int:
         raise AudioTranscriptionConfigError(
             INVALID_INTEGER_ENV_ERROR.format(name=name, value=value)
         ) from error
+
+
+def _load_float_env(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        parsed_value = float(value)
+    except ValueError as error:
+        raise AudioTranscriptionConfigError(
+            INVALID_FLOAT_ENV_ERROR.format(name=name, value=value)
+        ) from error
+    if not math.isfinite(parsed_value):
+        raise AudioTranscriptionConfigError(
+            INVALID_FLOAT_ENV_ERROR.format(name=name, value=value)
+        )
+    return parsed_value

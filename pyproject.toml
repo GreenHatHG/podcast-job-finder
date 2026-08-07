@@ -3,6 +3,9 @@ name = "podcast-job-finder"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
+    "certifi>=2026.6.17",
+    "cryptography>=49.0.0",
+    "doubaoime-asr",
     "numpy>=2.4.1",
     "openai>=2.15.0",
     "requests>=2.34.2",
@@ -73,5 +76,8 @@ exclude = [
   "*/.venv/*",
   "*/output/*",
 ]
-min_confidence = 80
+min_confidence = 60
 sort_by_size = true
+
+[tool.uv.sources]
+doubaoime-asr = { path = "../doubaoime-asr" }
