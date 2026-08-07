@@ -28,10 +28,6 @@ def parse_episode_url(episode_url: str) -> EpisodeInfo:
     return parse_episode_html(fetch_episode_html(episode_url))
 
 
-def extract_episode_audio_url(episode_url: str) -> str | None:
-    return parse_episode_url(episode_url).audio_url
-
-
 def extract_episode_id_from_url(episode_url: str) -> str | None:
     if not episode_url.startswith(("http://", "https://")):
         return None
