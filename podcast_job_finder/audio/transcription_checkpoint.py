@@ -17,9 +17,14 @@ from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
     AudioTranscriberProtocol,
     AudioTranscriptionResult,
+    BatchAudioTranscriberProtocol,
     TranscribedSpeechSegment,
+    build_transcribed_speech_segment,
     parse_timed_transcription_texts,
     transcribe_speech_segment,
+)
+from podcast_job_finder.audio.transcription_diagnostics import (
+    parse_transcription_diagnostics,
 )
 from podcast_job_finder.audio.vad import VadConfig
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
@@ -27,7 +32,7 @@ from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
-TRANSCRIPTION_CACHE_VERSION: Final = 5
+TRANSCRIPTION_CACHE_VERSION: Final = 6
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,7 @@ class SegmentTranscriptionCheckpointStore:
     runtime_signature: str
     metadata: Mapping[str, object]
     expected_metadata: Mapping[str, object]
+    strict_validation: bool = False
 
     def load(
         self,
@@ -87,18 +93,20 @@ class SegmentTranscriptionCheckpointStore:
         exported_segment: ExportedSpeechSegment,
         previous_segment: TranscribedSpeechSegment | None,
     ) -> dict[str, object]:
-        return {
+        expected_values = {
             "cache_version": TRANSCRIPTION_CACHE_VERSION,
-            "runtime_signature": self.runtime_signature,
             **self.expected_metadata,
             "index": exported_segment.index,
             "start_ms": exported_segment.segment.start_ms,
             "end_ms": exported_segment.segment.end_ms,
             "audio_path": str(exported_segment.file_path),
-            "previous_segment_signature": _build_previous_segment_signature(
-                previous_segment
-            ),
         }
+        if self.strict_validation:
+            expected_values["runtime_signature"] = self.runtime_signature
+            expected_values["previous_segment_signature"] = (
+                _build_previous_segment_signature(previous_segment)
+            )
+        return expected_values
 
 
 def build_audio_transcription_runtime_signature(
@@ -124,6 +132,28 @@ def transcribe_speech_segments_with_checkpoints(
     transcriber: AudioTranscriberProtocol,
     checkpoint_store: SegmentTranscriptionCheckpointStore,
     overwrite: bool = False,
+) -> tuple[AudioTranscriptionResult, bool]:
+    if isinstance(transcriber, BatchAudioTranscriberProtocol):
+        return _transcribe_batches_with_checkpoints(
+            segments,
+            transcriber=transcriber,
+            checkpoint_store=checkpoint_store,
+            overwrite=overwrite,
+        )
+    return _transcribe_segments_sequentially(
+        segments,
+        transcriber=transcriber,
+        checkpoint_store=checkpoint_store,
+        overwrite=overwrite,
+    )
+
+
+def _transcribe_segments_sequentially(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    transcriber: AudioTranscriberProtocol,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    overwrite: bool,
 ) -> tuple[AudioTranscriptionResult, bool]:
     transcribed_segments: list[TranscribedSpeechSegment] = []
     # 保留上一段的完整结果：下一段既可能用到文字，也可能用到时间信息。
@@ -165,6 +195,166 @@ def transcribe_speech_segments_with_checkpoints(
     )
 
 
+def _transcribe_batches_with_checkpoints(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    transcriber: BatchAudioTranscriberProtocol,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    overwrite: bool,
+) -> tuple[AudioTranscriptionResult, bool]:
+    if transcriber.batch_size <= 0:
+        raise ValueError("batch_size 必须大于 0。")
+    if overwrite:
+        transcribed_segments: list[TranscribedSpeechSegment] = []
+        _transcribe_pending_batches(
+            segments,
+            transcriber=transcriber,
+            checkpoint_store=checkpoint_store,
+            previous_segment=None,
+            transcribed_segments=transcribed_segments,
+        )
+        return AudioTranscriptionResult(segments=transcribed_segments), False
+    return _transcribe_with_sparse_checkpoints(
+        segments,
+        transcriber=transcriber,
+        checkpoint_store=checkpoint_store,
+    )
+
+
+def _transcribe_with_sparse_checkpoints(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    transcriber: BatchAudioTranscriberProtocol,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+) -> tuple[AudioTranscriptionResult, bool]:
+    transcribed_segments: list[TranscribedSpeechSegment] = []
+    previous_segment = None
+    all_segments_cached = bool(segments)
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        cached_segment = _load_cached_segment(
+            segment,
+            checkpoint_store=checkpoint_store,
+            previous_segment=previous_segment,
+        )
+        if cached_segment is not None:
+            _append_cached_segment(
+                segment,
+                cached_segment,
+                transcribed_segments=transcribed_segments,
+            )
+            previous_segment = cached_segment
+            index += 1
+            continue
+
+        all_segments_cached = False
+        run_end = _find_next_cached_segment(
+            segments,
+            start=index + 1,
+            checkpoint_store=checkpoint_store,
+            previous_segment=previous_segment,
+        )
+        previous_segment = _transcribe_pending_batches(
+            segments[index:run_end],
+            transcriber=transcriber,
+            checkpoint_store=checkpoint_store,
+            previous_segment=previous_segment,
+            transcribed_segments=transcribed_segments,
+        )
+        index = run_end
+
+    return AudioTranscriptionResult(segments=transcribed_segments), all_segments_cached
+
+
+def _transcribe_pending_batches(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    transcriber: BatchAudioTranscriberProtocol,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    previous_segment: TranscribedSpeechSegment | None,
+    transcribed_segments: list[TranscribedSpeechSegment],
+) -> TranscribedSpeechSegment | None:
+    current_previous = previous_segment
+    expected_paths = {segment.file_path for segment in segments}
+    processed_paths: set[Path] = set()
+    for outputs in transcriber.transcribe_batches(
+        segments,
+        previous_segment=current_previous,
+    ):
+        if not outputs:
+            raise ValueError("批量转写结果数量与音频片段数量不一致。")
+        for item in outputs:
+            segment = item.segment
+            if segment.file_path not in expected_paths:
+                raise ValueError("批量转写结果包含未请求的音频片段。")
+            if segment.file_path in processed_paths:
+                raise ValueError("批量转写结果包含重复的音频片段。")
+            transcribed_segment = build_transcribed_speech_segment(
+                segment,
+                item.output,
+            )
+            checkpoint_store.save(
+                segment.file_path.with_suffix(".json"),
+                exported_segment=segment,
+                transcribed_segment=transcribed_segment,
+                previous_segment=item.previous_segment,
+            )
+            transcribed_segments.append(transcribed_segment)
+            processed_paths.add(segment.file_path)
+            current_previous = transcribed_segment
+    if processed_paths != expected_paths:
+        raise ValueError("批量转写结果数量与音频片段数量不一致。")
+    return current_previous
+
+
+def _find_next_cached_segment(
+    segments: Sequence[ExportedSpeechSegment],
+    *,
+    start: int,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    previous_segment: TranscribedSpeechSegment | None,
+) -> int:
+    for index in range(start, len(segments)):
+        if (
+            _load_cached_segment(
+                segments[index],
+                checkpoint_store=checkpoint_store,
+                previous_segment=previous_segment,
+            )
+            is not None
+        ):
+            return index
+    return len(segments)
+
+
+def _load_cached_segment(
+    segment: ExportedSpeechSegment,
+    *,
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+    previous_segment: TranscribedSpeechSegment | None,
+) -> TranscribedSpeechSegment | None:
+    return checkpoint_store.load(
+        segment.file_path.with_suffix(".json"),
+        exported_segment=segment,
+        previous_segment=previous_segment,
+    )
+
+
+def _append_cached_segment(
+    segment: ExportedSpeechSegment,
+    cached_segment: TranscribedSpeechSegment,
+    *,
+    transcribed_segments: list[TranscribedSpeechSegment],
+) -> None:
+    logger.info(
+        "命中音频片段转写检查点：path=%s index=%d",
+        segment.file_path.with_suffix(".json"),
+        segment.index,
+    )
+    transcribed_segments.append(cached_segment)
+
+
 def _read_json_object(path: Path) -> dict[str, object]:
     with path.open(encoding="utf-8") as file_obj:
         payload = json.load(file_obj)
@@ -197,6 +387,7 @@ def _validate_checkpoint_payload(
             payload.get("sentences"),
             field_name="sentences",
         ),
+        diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
     )
 
 

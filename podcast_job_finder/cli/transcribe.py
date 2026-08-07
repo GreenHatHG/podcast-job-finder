@@ -16,7 +16,6 @@ from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
-    VadConfig,
     detect_and_export_speech_segments,
 )
 from podcast_job_finder.audio.transcription_checkpoint import (
@@ -54,6 +53,10 @@ from podcast_job_finder.audio.transcription_article import (
 from podcast_job_finder.audio.transcription_formatter import (
     EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
     format_transcription_segments,
+)
+from podcast_job_finder.audio.transcription_confidence_report import (
+    TRANSCRIPTION_QUALITY_REPORT_FILE_NAME,
+    save_transcription_quality_report,
 )
 
 
@@ -109,7 +112,7 @@ def _run_transcription(
         args.segment_audio_format,
         transcription_runtime=transcription_runtime,
     )
-    vad_config = VadConfig()
+    vad_config = transcription_runtime.vad_config
     exported_segments = detect_and_export_speech_segments(
         args.audio_path,
         output_dir=args.output_dir,
@@ -134,6 +137,7 @@ def _run_transcription(
         ),
         metadata=source_metadata,
         expected_metadata=source_metadata,
+        strict_validation=args.strict_checkpoint_validation,
     )
     result, _ = transcribe_speech_segments_with_checkpoints(
         selected_segments,
@@ -146,6 +150,12 @@ def _run_transcription(
         article_path,
         title=args.audio_path.stem,
         body=result.text,
+    )
+    quality_report_path = args.output_dir / TRANSCRIPTION_QUALITY_REPORT_FILE_NAME
+    save_transcription_quality_report(
+        quality_report_path,
+        result,
+        exported_segments=selected_segments,
     )
     formatting_metadata = _format_transcription(
         args,
@@ -164,6 +174,7 @@ def _run_transcription(
             "available_segment_count": len(exported_segments),
             "transcribed_segment_count": len(selected_segments),
             "article_path": str(article_path),
+            "transcription_quality_report_path": str(quality_report_path),
             **formatting_metadata,
         },
         exported_segments=selected_segments,
@@ -212,6 +223,10 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         default=AUTO_SEGMENT_AUDIO_FORMAT,
     )
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--strict-checkpoint-validation",
+        action="store_true",
+    )
     return parser
 
 

@@ -48,6 +48,11 @@ from podcast_job_finder.audio.pid_transcription import (
     run_pid_audio_transcription,
     save_pid_audio_transcription_report,
 )
+from podcast_job_finder.audio.pid_transcription_schedule import (
+    DEFAULT_AUDIO_PROCESSING_MODE,
+    SUPPORTED_AUDIO_PROCESSING_MODES,
+    AudioProcessingMode,
+)
 from podcast_job_finder.audio.transcription_runtime import (
     AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
@@ -63,7 +68,8 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         (
             f"      {PROGRAM_NAME} pid --pid <pid> [--all] "
             "[--max-episodes <正整数>] [--source page|audio] "
-            "[--transcribe-only]"
+            "[--transcribe-only] [--audio-processing-mode sequential|download-first] "
+            "[--strict-checkpoint-validation]"
         ),
     ]
 )
@@ -165,6 +171,15 @@ def _build_command_parser() -> argparse.ArgumentParser:
         default=PAGE_SOURCE,
     )
     pid_parser.add_argument("--transcribe-only", action="store_true")
+    pid_parser.add_argument(
+        "--audio-processing-mode",
+        choices=SUPPORTED_AUDIO_PROCESSING_MODES,
+        default=DEFAULT_AUDIO_PROCESSING_MODE,
+    )
+    pid_parser.add_argument(
+        "--strict-checkpoint-validation",
+        action="store_true",
+    )
     return parser
 
 
@@ -241,6 +256,8 @@ def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int
             parsed_args.pid,
             work_items,
             transcribe_only=parsed_args.transcribe_only,
+            processing_mode=parsed_args.audio_processing_mode,
+            strict_checkpoint_validation=parsed_args.strict_checkpoint_validation,
         )
     return _run_pid_page_mode(parsed_args.pid, work_items)
 
@@ -275,13 +292,18 @@ def _run_pid_audio_mode(
     work_items: Sequence[EpisodeWorkItem],
     *,
     transcribe_only: bool,
+    processing_mode: AudioProcessingMode,
+    strict_checkpoint_validation: bool,
 ) -> int:
-    transcription_runtime = _load_audio_transcription_runtime()
+    transcription_runtime = _load_audio_transcription_runtime(
+        strict_checkpoint_validation=strict_checkpoint_validation,
+    )
     try:
         transcription_result = run_pid_audio_transcription(
             pid=pid,
             work_items=work_items,
             runtime=transcription_runtime,
+            processing_mode=processing_mode,
         )
         report_path = save_pid_audio_transcription_report(
             pid=pid,
@@ -316,9 +338,15 @@ def _run_pid_audio_mode(
     return 1 if extraction_result.fail_count > 0 else 0
 
 
-def _load_audio_transcription_runtime() -> PidAudioTranscriptionRuntime:
+def _load_audio_transcription_runtime(
+    *,
+    strict_checkpoint_validation: bool = False,
+) -> PidAudioTranscriptionRuntime:
+    transcription = load_audio_transcription_runtime_from_env()
     return PidAudioTranscriptionRuntime(
-        transcription=load_audio_transcription_runtime_from_env(),
+        transcription=transcription,
+        vad_config=transcription.vad_config,
+        strict_checkpoint_validation=strict_checkpoint_validation,
     )
 
 
