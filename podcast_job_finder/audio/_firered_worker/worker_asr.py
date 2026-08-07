@@ -7,18 +7,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import onnxruntime as ort  # type: ignore[import-not-found]
 
-from worker_features import FeatureExtractor  # type: ignore[import-not-found]
+from worker_ctc import (  # type: ignore[import-not-found]
+    ENCODER_FRAME_SHIFT_MS,
+    FireRedCtcModel,
+    load_onnx_session,
+)
 
 
-BLANK_TOKEN = "<blank>"
 SOS_TOKEN = "<sos>"
 EOS_TOKEN = "<eos>"
 SPECIAL_TOKEN_PREFIX = "<"
 SPECIAL_TOKEN_SUFFIX = ">"
 SENTENCEPIECE_SPACE = "▁"
-ENCODER_FRAME_SHIFT_MS = 40
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,31 +28,6 @@ class AlignedToken:
     text: str
     start_ms: int
     end_ms: int
-
-
-class TokenDictionary:
-    def __init__(self, path: Path) -> None:
-        self._id_to_token: dict[int, str] = {}
-        self._token_to_id: dict[str, int] = {}
-        with path.open(encoding="utf-8") as file_obj:
-            for line_index, line in enumerate(file_obj):
-                fields = line.strip().split()
-                if not fields:
-                    continue
-                token = fields[0]
-                token_id = (
-                    int(fields[1])
-                    if len(fields) >= 2 and fields[1].isdigit()
-                    else line_index
-                )
-                self._id_to_token[token_id] = token
-                self._token_to_id[token] = token_id
-
-    def id(self, token: str) -> int:
-        return self._token_to_id[token]
-
-    def text(self, token_id: int) -> str:
-        return self._id_to_token.get(token_id, "<unk>")
 
 
 class FireRedOnnxAsr:  # pylint: disable=too-many-instance-attributes
@@ -72,36 +48,21 @@ class FireRedOnnxAsr:  # pylint: disable=too-many-instance-attributes
             provider: 指定使用哪种设备运行模型，例如 CPU。
             intra_op_threads: 模型运行时最多使用的 CPU 线程数。
         """
-        # 读取 tokens.txt。这个文件给模型认识的每个字、词或词的一部分分配
-        # 一个数字，例如“你”可能对应 100、“好”可能对应 101。模型识别时
-        # 输出的是这些数字，TokenDictionary 可以把数字查回对应的文字，
-        # 也可以根据文字查到它的数字。
-        self._tokens = TokenDictionary(model_dir / "tokens.txt")
+        self._ctc_model = FireRedCtcModel(
+            model_dir,
+            provider=provider,
+            intra_op_threads=intra_op_threads,
+        )
+        self._tokens = self._ctc_model.tokens
 
         # 记住三个特殊标记的编号。它们分别表示“没有文字”“一句话开始”和
         # “一句话结束”，识别过程中会用这些编号判断结果是否有效或已经结束。
-        self._blank_id = self._tokens.id(BLANK_TOKEN)
+        self._blank_id = self._ctc_model.blank_id
         self._sos_id = self._tokens.id(SOS_TOKEN)
         self._eos_id = self._tokens.id(EOS_TOKEN)
 
-        # 准备声音特征提取器。它会把音频转换成模型能够理解的数据；
-        # cmvn.ark 中保存了转换时需要使用的标准化参数。
-        self._features = FeatureExtractor(model_dir / "cmvn.ark")
-
-        # 依次载入语音识别的三个模型。它们共同完成“听懂声音、生成文字、
-        # 确定每段文字出现时间”的工作，并使用相同的运行设备和线程数配置。
-        self._encoder = _load_session(
-            model_dir / "encoder.int8.onnx",
-            provider=provider,
-            intra_op_threads=intra_op_threads,
-        )
-        self._decoder = _load_session(
+        self._decoder = load_onnx_session(
             model_dir / "decoder.int8.onnx",
-            provider=provider,
-            intra_op_threads=intra_op_threads,
-        )
-        self._ctc = _load_session(
-            model_dir / "ctc.int8.onnx",
             provider=provider,
             intra_op_threads=intra_op_threads,
         )
@@ -140,23 +101,14 @@ class FireRedOnnxAsr:  # pylint: disable=too-many-instance-attributes
         Returns:
             按出现顺序排列的文字片段，每项都带有文字、编号和起止时间。
         """
-        # 先把音频转换成模型能够理解的声音特征。feature_lengths 记录实际得到
-        # 多少个短声音片段，帮助模型只处理文件中有效的声音数据。
-        features, feature_lengths = self._features.extract(audio_path)
-
-        # 运行编码器，让模型先“听”完整段音频。encoder_outputs 是模型整理后的
-        # 声音信息；encoder_lengths 和 encoder_mask 标出其中真正有效的部分。
-        encoder_outputs, encoder_lengths, encoder_mask = self._encoder.run(
-            ["output", "output_lengths", "mask"],
-            {
-                "input": features,
-                "input_lengths": feature_lengths,
-            },
-        )
+        encoded_audio = self._ctc_model.encode(audio_path)
 
         # 根据编码器整理出的声音信息逐步生成文字编号。例如模型判断结果是
         # “你”“好”，这里得到的可能是它们在 tokens.txt 中对应的两个数字。
-        token_ids = self._decode(encoder_outputs, encoder_mask.astype(np.bool_))
+        token_ids = self._decode(
+            encoded_audio.outputs,
+            encoded_audio.mask.astype(np.bool_),
+        )
 
         # 解码结果里可能包含“开始”“结束”等控制识别流程的特殊标记。
         # 时间对齐只需要真正显示给用户的文字，所以在这里去掉特殊标记。
@@ -170,20 +122,10 @@ class FireRedOnnxAsr:  # pylint: disable=too-many-instance-attributes
         if not text_token_ids:
             return []
 
-        # 运行 CTC 模型，估算每个很短的时间片更可能对应哪个文字编号。
-        # 这些估算结果稍后用于确定每个字或词在音频中的起止时间。
-        ctc_logits = self._ctc.run(
-            ["logits"],
-            {"encoder_outputs": encoder_outputs.astype(np.float32)},
-        )[0]
-
-        # 只保留音频实际占用的时间片，排除为了统一数据形状而补充的空白部分。
-        valid_frame_count = int(encoder_lengths[0])
-
         # 把已经识别出的文字按顺序放回最合适的时间片，得到每项文字对应的
         # 开始位置和结束位置。
         spans = _force_align(
-            ctc_logits[0, :valid_frame_count],
+            self._ctc_model.build_logits(encoded_audio),
             text_token_ids,
             blank_id=self._blank_id,
         )
@@ -236,21 +178,6 @@ class FireRedOnnxAsr:  # pylint: disable=too-many-instance-attributes
             )
             caches = outputs[1:]
         return token_ids
-
-
-def _load_session(
-    path: Path,
-    *,
-    provider: str,
-    intra_op_threads: int,
-) -> ort.InferenceSession:
-    options = ort.SessionOptions()
-    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    options.intra_op_num_threads = intra_op_threads
-    providers = [provider]
-    if provider != "CPUExecutionProvider":
-        providers.append("CPUExecutionProvider")
-    return ort.InferenceSession(str(path), options, providers=providers)
 
 
 def _force_align(  # pylint: disable=too-many-locals
