@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final
 
+from podcast_job_finder.audio.firered_config import (
+    DEFAULT_ORT_INTRA_OP_THREADS,
+    DEFAULT_ORT_PROVIDER,
+)
 from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
 from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
 from podcast_job_finder.audio.transcription import (
@@ -18,8 +22,6 @@ from podcast_job_finder.audio.transcription import (
 
 
 FIRERED_MODEL_NAME: Final = "FireRedASR2-AED-ONNX+FireRedPunc"
-DEFAULT_ORT_PROVIDER: Final = "CPUExecutionProvider"
-DEFAULT_ORT_INTRA_OP_THREADS: Final = 4
 WORKER_READY_STATUS: Final = "ready"
 WORKER_RESULT_STATUS: Final = "result"
 WORKER_SHUTDOWN_COMMAND: Final = "shutdown"

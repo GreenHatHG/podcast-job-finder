@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import IO, Final
+
+from podcast_job_finder.audio.firered_config import (
+    DEFAULT_ORT_INTRA_OP_THREADS,
+    DEFAULT_ORT_PROVIDER,
+)
+from podcast_job_finder.audio.transcription import AudioTranscriptionError
+
+
+WORKER_READY_STATUS: Final = "ready"
+WORKER_RESULT_STATUS: Final = "result"
+WORKER_SHUTDOWN_COMMAND: Final = "shutdown"
+WORKER_CLOSE_TIMEOUT_SECONDS: Final = 5
+REQUIRED_ALIGNMENT_MODEL_FILES: Final = (
+    "encoder.int8.onnx",
+    "ctc.int8.onnx",
+    "cmvn.ark",
+    "tokens.txt",
+)
+WORKER_ERROR: Final = "FireRed CTC 工作进程返回无效结果：{message}"
+
+
+@dataclass(slots=True, frozen=True)
+class FireRedAlignmentConfig:
+    python_executable: Path
+    asr_model_dir: Path
+    ort_provider: str = DEFAULT_ORT_PROVIDER
+    ort_intra_op_threads: int = DEFAULT_ORT_INTRA_OP_THREADS
+
+    def __post_init__(self) -> None:
+        _require_file(self.python_executable, "FIRERED_PYTHON")
+        _require_model_files(self.asr_model_dir)
+        if self.ort_intra_op_threads <= 0:
+            raise ValueError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "timestamp_model": "FireRedASR2-CTC-ONNX",
+            "timestamp_provider": self.ort_provider,
+            "timestamp_model_dir": str(self.asr_model_dir.resolve()),
+        }
+
+    def signature_payload(self) -> dict[str, object]:
+        return {
+            **self.metadata(),
+            "ort_intra_op_threads": self.ort_intra_op_threads,
+            "model_files": {
+                name: {
+                    "size": (self.asr_model_dir / name).stat().st_size,
+                    "mtime_ns": (self.asr_model_dir / name).stat().st_mtime_ns,
+                }
+                for name in REQUIRED_ALIGNMENT_MODEL_FILES
+            },
+        }
+
+
+@dataclass(slots=True, frozen=True)
+class CharacterAlignment:
+    text: str
+    source_start: int
+    source_end: int
+    start_ms: int
+    end_ms: int
+    confidence: float
+
+
+class FireRedTextAlignmentClient:
+    def __init__(self, config: FireRedAlignmentConfig) -> None:
+        self._config = config
+        self._process: subprocess.Popen[str] | None = None
+
+    def align(self, audio_path: Path, text: str) -> tuple[CharacterAlignment, ...]:
+        response = self._request(
+            self._ensure_process(),
+            {"audio_path": str(audio_path.resolve()), "text": text},
+        )
+        if response.get("status") != WORKER_RESULT_STATUS:
+            raise AudioTranscriptionError(
+                WORKER_ERROR.format(message=response.get("error", response))
+            )
+        value = response.get("alignments")
+        if not isinstance(value, list):
+            raise AudioTranscriptionError(
+                WORKER_ERROR.format(message="alignments 不是数组")
+            )
+        return tuple(_parse_alignment(item) for item in value)
+
+    def close(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None or process.poll() is not None:
+            return
+        try:
+            _write_request(process.stdin, {"command": WORKER_SHUTDOWN_COMMAND})
+            process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            process.terminate()
+            try:
+                process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    def _ensure_process(self) -> subprocess.Popen[str]:
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        worker_path = (
+            Path(__file__).with_name("_firered_worker") / "alignment_worker.py"
+        )
+        environment = os.environ.copy()
+        environment.setdefault("TOKENIZERS_PARALLELISM", "false")
+        process = subprocess.Popen(  # pylint: disable=consider-using-with
+            [
+                str(self._config.python_executable),
+                str(worker_path),
+                "--asr-model-dir",
+                str(self._config.asr_model_dir),
+                "--ort-provider",
+                self._config.ort_provider,
+                "--ort-intra-op-threads",
+                str(self._config.ort_intra_op_threads),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            env=environment,
+        )
+        self._process = process
+        response = _read_response(process)
+        if response.get("status") != WORKER_READY_STATUS:
+            self.close()
+            raise AudioTranscriptionError(
+                WORKER_ERROR.format(message=response.get("error", response))
+            )
+        return process
+
+    @staticmethod
+    def _request(
+        process: subprocess.Popen[str],
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        _write_request(process.stdin, payload)
+        return _read_response(process)
+
+
+def _parse_alignment(value: object) -> CharacterAlignment:
+    if not isinstance(value, dict):
+        raise AudioTranscriptionError(WORKER_ERROR.format(message=value))
+    text = value.get("text")
+    confidence = value.get("confidence")
+    if (
+        not isinstance(text, str)
+        or not isinstance(confidence, (int, float))
+        or isinstance(confidence, bool)
+        or not 0 <= float(confidence) <= 1
+    ):
+        raise AudioTranscriptionError(WORKER_ERROR.format(message=value))
+    return CharacterAlignment(
+        text=text,
+        source_start=_parse_integer(value, "source_start"),
+        source_end=_parse_integer(value, "source_end"),
+        start_ms=_parse_integer(value, "start_ms"),
+        end_ms=_parse_integer(value, "end_ms"),
+        confidence=float(confidence),
+    )
+
+
+def _parse_integer(payload: dict[str, object], field_name: str) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise AudioTranscriptionError(WORKER_ERROR.format(message=payload))
+    return value
+
+
+def _write_request(stream: IO[str] | None, payload: dict[str, object]) -> None:
+    if stream is None:
+        raise BrokenPipeError("FireRed CTC 工作进程标准输入不可用。")
+    stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    stream.flush()
+
+
+def _read_response(process: subprocess.Popen[str]) -> dict[str, object]:
+    if process.stdout is None:
+        raise AudioTranscriptionError(WORKER_ERROR.format(message="标准输出不可用"))
+    line = process.stdout.readline()
+    if not line:
+        raise AudioTranscriptionError(
+            WORKER_ERROR.format(message=f"进程退出：{process.poll()}")
+        )
+    try:
+        response = json.loads(line)
+    except json.JSONDecodeError as error:
+        raise AudioTranscriptionError(
+            WORKER_ERROR.format(message=line.strip())
+        ) from error
+    if not isinstance(response, dict):
+        raise AudioTranscriptionError(WORKER_ERROR.format(message=response))
+    return response
+
+
+def _require_file(path: Path, field_name: str) -> None:
+    if not path.is_file():
+        raise ValueError(f"{field_name} 指向的文件不存在：{path}")
+
+
+def _require_model_files(model_dir: Path) -> None:
+    missing = [
+        name
+        for name in REQUIRED_ALIGNMENT_MODEL_FILES
+        if not (model_dir / name).is_file()
+    ]
+    if missing:
+        raise ValueError(f"FireRed CTC 模型目录缺少文件：{', '.join(missing)}")
