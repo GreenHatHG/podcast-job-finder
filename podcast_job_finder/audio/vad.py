@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import numpy as np
@@ -26,6 +26,7 @@ VAD_SAMPLE_RATE: Final = 16_000
 VAD_FRAME_SAMPLES: Final = 256
 VAD_FRAME_DURATION_MS: Final = VAD_FRAME_SAMPLES / VAD_SAMPLE_RATE * 1_000
 VAD_DETECTION_OPERATION_NAME: Final = "逐帧语音检测"
+DEFAULT_VAD_THRESHOLD: Final = 0.5
 
 # 整段音频的平均音量高于这个值时，通常包含较响的背景声。
 # 此时会提高判断标准，减少把背景声当成人声的情况。
@@ -49,6 +50,9 @@ MAX_FORCED_SPLIT_OVERLAP_MS: Final = 800
 
 # 每个片段优先保留的最短语音时长。短于这个时长的相邻片段会尝试合并。
 MIN_TARGET_SPEECH_DURATION_MS: Final = 20_000
+
+# 少于这个时长的检测结果通常是瞬态噪声，无法形成可识别的语音片段。
+MIN_DETECTED_SPEECH_DURATION_MS: Final = 100
 
 # 自动降低判断标准时允许达到的最低值，避免把大量背景声算作人声。
 MIN_ADAPTIVE_THRESHOLD: Final = 0.2
@@ -92,6 +96,13 @@ class SpeechSegment:
     # 片段结束位置；该位置对应的采样点不包含在片段内。
     end_sample: int
 
+    # 第一次整段 VAD 检测得到的帧掩码，供后续覆盖率检测复用。
+    speech_frames: NDArray[np.bool_] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
     @property
     def start_ms(self) -> int:
         """返回用于展示的开始毫秒；四舍五入可能产生轻微精度差异。"""
@@ -118,7 +129,7 @@ class SpeechSegment:
 class VadConfig:
     # 判断“这段声音像不像人在说话”的严格程度，取值在 0 与 1 之间。
     # 数值越小越容易把轻声和背景声算作说话，数值越大越容易漏掉轻声，默认 0.5。
-    threshold: float = 0.5
+    threshold: float = DEFAULT_VAD_THRESHOLD
 
     # 每个片段期望保留的最短说话时间，单位是毫秒，20000 表示 20 秒。
     # 短于这个时间的内容会与相邻片段合并。
@@ -190,7 +201,7 @@ def _detect_speech_segments(
     frame_duration_ms = VAD_FRAME_DURATION_MS
 
     # 第一步：逐个检查约 16 毫秒的小段，记录每一小段是否有人说话。
-    speech_frames = _classify_speech_frames(audio, config.threshold)
+    speech_frames = classify_speech_frames(audio, config.threshold)
 
     # 第二步：从开始说话起持续往后检查，短暂停顿前后的说话内容会合并成一个片段；
     # 遇到足够长的安静后，结束并保存这个片段。
@@ -198,6 +209,14 @@ def _detect_speech_segments(
         speech_frames,
         min_silence_frames=_milliseconds_to_frames(
             config.min_silence_duration_ms,
+            frame_duration_ms,
+        ),
+    )
+    raw_segments = _filter_short_speech_segments(
+        raw_segments,
+        speech_frames=speech_frames,
+        min_speech_frames=_milliseconds_to_frames(
+            MIN_DETECTED_SPEECH_DURATION_MS,
             frame_duration_ms,
         ),
     )
@@ -232,12 +251,14 @@ def _detect_speech_segments(
     )
 
     # 第四步：把内部使用的帧位置转换成精确的采样位置。
-    return _convert_to_segments(optimized_segments)
+    return _convert_to_segments(optimized_segments, speech_frames=speech_frames)
 
 
-def _classify_speech_frames(
+def classify_speech_frames(
     audio: NormalizedAudio,
     configured_threshold: float,
+    *,
+    report_progress: bool = True,
 ) -> NDArray[np.bool_]:
     """把整段声音切成约 16 毫秒的小段，逐段判断是否有人说话。
 
@@ -265,10 +286,14 @@ def _classify_speech_frames(
     )
     vad = TenVad(VAD_FRAME_SAMPLES, threshold)
     speech_frames = np.zeros(frame_count, dtype=np.bool_)
-    progress_logger = PercentageProgressLogger(
-        logger=logger,
-        operation_name=VAD_DETECTION_OPERATION_NAME,
-        total_items=frame_count,
+    progress_logger = (
+        PercentageProgressLogger(
+            logger=logger,
+            operation_name=VAD_DETECTION_OPERATION_NAME,
+            total_items=frame_count,
+        )
+        if report_progress
+        else None
     )
 
     # 按播放顺序检查每个小段，并记下这一小段里是否有人说话。
@@ -278,7 +303,8 @@ def _classify_speech_frames(
             break
         _, is_speech = vad.process(frame)
         speech_frames[frame_index] = is_speech == 1
-        progress_logger.update(frame_index + 1)
+        if progress_logger is not None:
+            progress_logger.update(frame_index + 1)
 
     speech_frame_count = int(np.count_nonzero(speech_frames))
     logger.debug(
@@ -383,13 +409,31 @@ def _build_natural_segments(
     return segments
 
 
+def _filter_short_speech_segments(
+    segments: list[tuple[int, int]],
+    *,
+    speech_frames: NDArray[np.bool_],
+    min_speech_frames: int,
+) -> list[tuple[int, int]]:
+    """删除有效语音帧不足门槛的瞬态误判片段。"""
+    return [
+        (start_frame, end_frame)
+        for start_frame, end_frame in segments
+        if int(np.count_nonzero(speech_frames[start_frame:end_frame]))
+        >= min_speech_frames
+    ]
+
+
 def _convert_to_segments(
     segments: list[tuple[int, int]],
+    *,
+    speech_frames: NDArray[np.bool_],
 ) -> list[SpeechSegment]:
     return [
         SpeechSegment(
             start_sample=start_frame * VAD_FRAME_SAMPLES,
             end_sample=end_frame * VAD_FRAME_SAMPLES,
+            speech_frames=speech_frames,
         )
         for start_frame, end_frame in segments
         if end_frame > start_frame

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Protocol, Sequence
+from typing import Iterator, Protocol, Sequence, runtime_checkable
 
 from podcast_job_finder.audio.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.transcription_diagnostics import (
+    TranscriptionDiagnostics,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -19,13 +22,17 @@ class TimedTranscriptionText:
     text: str
     start_ms: int
     end_ms: int
+    confidence: float | None = None
 
-    def to_dict(self) -> dict[str, int | str]:
-        return {
+    def to_dict(self) -> dict[str, int | float | str]:
+        payload: dict[str, int | float | str] = {
             "text": self.text,
             "start_ms": self.start_ms,
             "end_ms": self.end_ms,
         }
+        if self.confidence is not None:
+            payload["confidence"] = round(self.confidence, 8)
+        return payload
 
 
 def parse_timed_transcription_texts(
@@ -50,6 +57,7 @@ class TranscriptionOutput:
     character_timestamps: tuple[TimedTranscriptionText, ...] = ()
     # 按完整句子记录起止时间，主要用于字幕切句和阅读展示。
     sentences: tuple[TimedTranscriptionText, ...] = ()
+    diagnostics: TranscriptionDiagnostics | None = None
 
 
 class AudioTranscriberProtocol(Protocol):
@@ -63,6 +71,18 @@ class AudioTranscriberProtocol(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class BatchAudioTranscriberProtocol(AudioTranscriberProtocol, Protocol):
+    batch_size: int
+
+    def transcribe_batches(
+        self,
+        segments: Sequence[ExportedSpeechSegment],
+        *,
+        previous_segment: TranscribedSpeechSegment | None,
+    ) -> Iterator[Sequence[TranscriptionSegmentResult]]: ...
+
+
 @dataclass(slots=True, frozen=True)
 class TranscribedSpeechSegment:
     index: int
@@ -71,6 +91,7 @@ class TranscribedSpeechSegment:
     text: str
     character_timestamps: tuple[TimedTranscriptionText, ...] = ()
     sentences: tuple[TimedTranscriptionText, ...] = ()
+    diagnostics: TranscriptionDiagnostics | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -85,7 +106,18 @@ class TranscribedSpeechSegment:
             ]
         if self.sentences:
             payload["sentences"] = [sentence.to_dict() for sentence in self.sentences]
+        if self.diagnostics is not None:
+            payload["diagnostics"] = self.diagnostics.to_dict()
         return payload
+
+
+@dataclass(slots=True, frozen=True)
+class TranscriptionSegmentResult:
+    """一次处理多个片段时，其中一个音频片段的转写结果。"""
+
+    segment: ExportedSpeechSegment
+    output: TranscriptionOutput
+    previous_segment: TranscribedSpeechSegment | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -101,24 +133,6 @@ class AudioTranscriptionResult:
             "text": self.text,
             "segments": [segment.to_dict() for segment in self.segments],
         }
-
-
-def transcribe_speech_segments(
-    segments: Sequence[ExportedSpeechSegment],
-    *,
-    transcriber: AudioTranscriberProtocol,
-) -> AudioTranscriptionResult:
-    transcribed_segments: list[TranscribedSpeechSegment] = []
-    previous_segment = None
-    for segment in segments:
-        transcribed_segment = transcribe_speech_segment(
-            segment,
-            transcriber=transcriber,
-            previous_segment=previous_segment,
-        )
-        transcribed_segments.append(transcribed_segment)
-        previous_segment = transcribed_segment
-    return AudioTranscriptionResult(segments=transcribed_segments)
 
 
 def transcribe_speech_segment(
@@ -137,6 +151,13 @@ def transcribe_speech_segment(
         segment,
         previous_segment=previous_segment,
     )
+    return build_transcribed_speech_segment(segment, output)
+
+
+def build_transcribed_speech_segment(
+    segment: ExportedSpeechSegment,
+    output: TranscriptionOutput,
+) -> TranscribedSpeechSegment:
     return TranscribedSpeechSegment(
         index=segment.index,
         start_ms=segment.segment.start_ms,
@@ -144,6 +165,7 @@ def transcribe_speech_segment(
         text=output.text,
         character_timestamps=output.character_timestamps,
         sentences=output.sentences,
+        diagnostics=output.diagnostics,
     )
 
 
@@ -170,7 +192,28 @@ def _parse_timed_transcription_text(
         text=text,
         start_ms=parsed_start_ms,
         end_ms=parsed_end_ms,
+        confidence=_parse_optional_confidence(
+            value, field_name=field_name, index=index
+        ),
     )
+
+
+def _parse_optional_confidence(
+    value: dict[str, object],
+    *,
+    field_name: str,
+    index: int,
+) -> float | None:
+    confidence = value.get("confidence")
+    if confidence is None:
+        return None
+    if (
+        not isinstance(confidence, (int, float))
+        or isinstance(confidence, bool)
+        or not 0 <= float(confidence) <= 1
+    ):
+        raise ValueError(f"{field_name}[{index}] confidence 无效。")
+    return float(confidence)
 
 
 def _parse_timestamp_range(

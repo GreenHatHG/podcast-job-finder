@@ -11,6 +11,9 @@ from podcast_job_finder.audio.transcription import (
     TranscribedSpeechSegment,
     parse_timed_transcription_texts,
 )
+from podcast_job_finder.audio.transcription_diagnostics import (
+    parse_transcription_diagnostics,
+)
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
 from podcast_job_finder.timestamps import build_utc_timestamp
 
@@ -34,6 +37,7 @@ class TranscriptionManifestError(ValueError):
 class EpisodeTranscriptionManifest:
     title: str
     segments: tuple[TranscribedSpeechSegment, ...]
+    metadata: Mapping[str, object]
 
 
 def save_audio_transcription_manifest(
@@ -80,6 +84,7 @@ def load_episode_transcription_manifest(
             parse_transcribed_segment(raw_segment, path=path, index=index)
             for index, raw_segment in enumerate(raw_segments)
         ),
+        metadata=payload,
     )
 
 
@@ -152,6 +157,7 @@ def parse_transcribed_segment(
                 payload.get("sentences"),
                 field_name="sentences",
             ),
+            diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
         )
     except ValueError as error:
         raise _build_invalid_segment_error(path, index) from error
