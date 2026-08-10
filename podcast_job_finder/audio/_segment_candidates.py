@@ -41,12 +41,25 @@ def build_segment_boundaries(
 ) -> list[SegmentBoundary]:
     """整理出所有可供后续分段使用的边界。
 
-    可以把一段较长的录音想成一篇没有分段的文章。这个函数会先找出所有
-    适合“换段”的位置，例如两段话之间原本就有的停顿，以及一段连续讲话中
-    相对适合切开的地方。它只负责准备候选位置，最终选用哪些位置由后续逻辑决定。
+    函数先按照第一段语音起点到最后一段语音终点的完整范围，统一准备控制
+    最长时长所需的强制切点。然后逐个处理自然语音段，加入段内停顿和段间
+    自然停顿。这里仅准备可选边界，最终使用哪些边界由后续动态规划统一决定。
     """
     # 起点也作为一个边界，方便后续从第一个位置开始组合语音片段。
     boundaries = [_terminal_boundary(segments[0][0])]
+
+    # 强制切点必须在进入循环前按照完整语音范围统一生成。如果在循环中为每个
+    # 自然语音段重新生成，各段都会从自己的起点重新平均切分，前一段留下的长度
+    # 无法影响后一段，节目开头或结尾就可能剩下只有几百毫秒的独立短片段。
+    # 统一生成后，所有自然语音段使用同一组位置参考，动态规划可以跨越自然停顿
+    # 重新安排片段长度，同时仍可优先选择后面加入的真实停顿位置。
+    fallback_candidates = build_fallback_candidates(
+        audio,
+        start_frame=segments[0][0],
+        end_frame=segments[-1][1],
+        max_speech_frames=config.max_speech_frames,
+        frame_samples=config.frame_samples,
+    )
 
     for segment_index, (start_frame, end_frame) in enumerate(segments):
         # 一段连续讲话可能仍然很长，这里会在它的内部完成以下操作：
@@ -57,11 +70,11 @@ def build_segment_boundaries(
         # 找到的所有内部边界会加入 boundaries，供后续流程统一选择。
         boundaries.extend(
             _build_internal_boundaries(
-                start_frame,
-                end_frame,
+                (start_frame, end_frame),
                 speech_frames=speech_frames,
                 audio=audio,
                 config=config,
+                fallback_candidates=fallback_candidates,
             )
         )
 
@@ -104,19 +117,21 @@ def _natural_boundary(
 
 
 def _build_internal_boundaries(
-    start_frame: int,
-    end_frame: int,
+    segment: tuple[int, int],
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
     config: BoundarySearchConfig,
+    fallback_candidates: list[CutCandidate],
 ) -> list[SegmentBoundary]:
     """为一段连续语音寻找可用的内部切分位置。
 
-    有些连续讲话很长，中间没有现成的语音段边界。这个函数会先寻找适合
-    切开的短暂停顿，再补充一些备用切点，避免最终得到的音频片段过长。
-    返回的每一项都描述一个切分位置，以及下一段音频应该从哪里开始。
+    函数先找出当前自然语音段里的真实短暂停顿，再从整段语音统一生成的
+    fallback_candidates 中取出落在当前范围内的强制切点。返回的每一项都
+    描述上一片段在哪里结束，以及下一片段应该从哪里开始。
     """
+    start_frame, end_frame = segment
+
     # 优先寻找讲话中的短暂停顿。这些位置更接近自然停顿，切开后听感更顺畅。
     candidates = build_silence_candidates(
         speech_frames,
@@ -126,16 +141,14 @@ def _build_internal_boundaries(
         frame_samples=config.frame_samples,
     )
 
-    # 连续讲话可能完全没有可用停顿，因此再加入按照片段长度准备的备用切点。
-    # 后续逻辑可以在找不到理想停顿时使用它们，防止单个输出片段过长。
+    # fallback_candidates 同时包含整段语音各处的强制切点。当前循环只负责
+    # 包装这个自然语音段内部的切点；落在其他语音段的切点会在对应循环中处理，
+    # 落在两段语音之间安静部分的切点则不会使用。这样既保留统一的长度安排，
+    # 又不会为了让片段长度接近而在一段长时间安静的地方额外制造强制边界。
     candidates.extend(
-        build_fallback_candidates(
-            audio,
-            start_frame=start_frame,
-            end_frame=end_frame,
-            max_speech_frames=config.max_speech_frames,
-            frame_samples=config.frame_samples,
-        )
+        candidate
+        for candidate in fallback_candidates
+        if start_frame < candidate.cut_frame < end_frame
     )
 
     # 两种来源可能给出同一个切点。先去重，再把每个候选位置整理成后续流程
