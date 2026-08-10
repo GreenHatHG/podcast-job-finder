@@ -1,7 +1,7 @@
 """豆包音频转写的主流程。
 
 这个文件负责把一个音频片段从“发送给豆包”处理到“整理成项目可以保存的结果”。
-它还会在识别结果疑似漏内容时，检查可疑位置并决定是否完整重试一次。
+它会重试空结果，并在识别结果疑似漏内容时检查可疑位置、决定是否完整重试。
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from .request_client import DoubaoRequestClient, SessionResponses
 from .response import (
     AsrResponseProtocol,
     DOUBAO_RESPONSE_ERROR,
+    DoubaoMissingFinalResponseError,
     DoubaoResponseSummary,
     build_doubao_response_summary,
 )
@@ -55,6 +56,10 @@ from .truncation_probe import (
 
 
 logger = logging.getLogger(__name__)
+DOUBAO_ASR_SERVICE_ERROR = (
+    "豆包 ASR 在 {count} 个不同音频片段连续两次未返回最终识别结果，"
+    "判定为豆包 ASR 服务或协议异常：threshold={threshold} latest_path={path}"
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -112,6 +117,7 @@ class DoubaoAudioTranscriber:
         """创建转写器及其所需的辅助组件。"""
 
         self._config = config
+        self._missing_final_segment_paths: set[Path] = set()
 
         # FireRed 用来找出每个字在音频里的开始和结束时间。
         self._aligner = FireRedTextAlignmentClient(config.alignment_config)
@@ -149,8 +155,8 @@ class DoubaoAudioTranscriber:
     ) -> TranscriptionOutput:
         """按顺序处理一个片段，并返回可保存的转写结果。
 
-        处理顺序是：初次识别、检查结果里是否有一段人声没有对应文字、必要时
-        完整重试，最后去除和前一个片段重复的内容并生成时间信息。
+        处理顺序是：初次识别、必要时重试空结果、检查是否有一段人声没有对应
+        文字、必要时完整重试，最后去除和前一个片段重复的内容并生成时间信息。
         """
 
         # 先完成一次正常识别，后面的判断都基于这次结果进行。
@@ -300,18 +306,29 @@ class DoubaoAudioTranscriber:
     ) -> _SegmentAttempts:
         """完成一个片段从初次识别到可选重试的完整流程。
 
-        初次识别结果里的每段人声都有对应文字时直接结束。如果发现有一段人声
-        没有对应文字，就单独识别那段音频；确认那里确实有人说话，或单独识别
-        过程发生错误时，再完整重试当前片段。
+        初次请求没有最终消息或文字为空时先重试一次。得到文字后，如果发现有
+        一段人声没有对应文字，就单独识别那段音频；确认那里确实有人说话，或
+        单独识别过程发生错误时，再完整重试当前片段。
         """
 
         # 把第一次返回的消息整理成文字、每个字出现的时间和检查结果。
-        initial_attempt = self._build_attempt_result(
-            segment,
-            initial_responses,
-            attempt=1,
-        )
+        # 没有最终消息时先重试一次，区分偶发的网络或服务响应问题。
+        try:
+            initial_attempt = self._build_attempt_result(
+                segment,
+                initial_responses,
+                attempt=1,
+            )
+        except DoubaoMissingFinalResponseError:
+            return _SegmentAttempts([self._retry_missing_final_response(segment)])
         attempts = _SegmentAttempts([initial_attempt])
+
+        # 豆包返回最终消息但文字为空时也重试一次，用于排除偶发的空响应。
+        if not initial_attempt.response_summary.text:
+            retry_attempt = self._retry_empty_text(segment)
+            if retry_attempt is not None:
+                attempts.attempts.append(retry_attempt)
+            return attempts
 
         # 结果正常时不做额外请求，避免增加服务压力和处理时间。
         if not initial_attempt.assessment.requires_truncation_probe:
@@ -384,6 +401,81 @@ class DoubaoAudioTranscriber:
         responses = self._request_client.collect_responses(segment.file_path)
         return self._build_attempt_result(segment, responses, attempt=attempt)
 
+    def _retry_missing_final_response(
+        self,
+        segment: ExportedSpeechSegment,
+    ) -> _AttemptResult:
+        """重试没有最终响应的片段，并累计连续两次失败的不同片段。"""
+
+        logger.warning(
+            "豆包片段未返回最终识别结果，使用相同音频重试：index=%d path=%s",
+            segment.index,
+            segment.file_path,
+        )
+        try:
+            retry_attempt = self._run_attempt(
+                segment,
+                attempt=DOUBAO_MAX_ATTEMPTS,
+            )
+        except DoubaoMissingFinalResponseError:
+            self._record_missing_final_response_segment(
+                segment,
+            )
+            raise
+        return retry_attempt
+
+    def _retry_empty_text(
+        self,
+        segment: ExportedSpeechSegment,
+    ) -> _AttemptResult | None:
+        """重试已正常结束但文字为空的片段，不计入服务异常。"""
+
+        logger.warning(
+            "豆包片段返回空文字，使用相同音频重试：index=%d path=%s",
+            segment.index,
+            segment.file_path,
+        )
+        try:
+            return self._run_attempt(
+                segment,
+                attempt=DOUBAO_MAX_ATTEMPTS,
+            )
+        except DoubaoMissingFinalResponseError:
+            logger.warning(
+                "豆包片段空文字重试未返回最终识别结果，保留第一次空结果："
+                "index=%d path=%s",
+                segment.index,
+                segment.file_path,
+            )
+            return None
+
+    def _record_missing_final_response_segment(
+        self,
+        segment: ExportedSpeechSegment,
+    ) -> None:
+        """记录连续两次缺少最终响应的片段，达到阈值时报告服务异常。"""
+
+        self._missing_final_segment_paths.add(segment.file_path)
+        segment_count = len(self._missing_final_segment_paths)
+        threshold = self._config.missing_final_segment_threshold
+        logger.warning(
+            "豆包片段连续两次未返回最终识别结果：index=%d "
+            "missing_final_segments=%d threshold=%d path=%s",
+            segment.index,
+            segment_count,
+            threshold,
+            segment.file_path,
+        )
+        if segment_count < threshold:
+            return
+        raise AudioTranscriptionError(
+            DOUBAO_ASR_SERVICE_ERROR.format(
+                count=segment_count,
+                threshold=threshold,
+                path=segment.file_path,
+            )
+        )
+
     def _build_attempt_result(
         self,
         segment: ExportedSpeechSegment,
@@ -454,7 +546,7 @@ def _validate_response_summary(
     """确认豆包响应中包含最终识别结果。"""
 
     if not response_summary.has_final_response:
-        raise AudioTranscriptionError(DOUBAO_RESPONSE_ERROR.format(path=path))
+        raise DoubaoMissingFinalResponseError(DOUBAO_RESPONSE_ERROR.format(path=path))
 
 
 def _attempt_quality_key(attempt: _AttemptResult) -> tuple[float, int, float]:

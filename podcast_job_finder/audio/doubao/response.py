@@ -3,8 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
+from podcast_job_finder.audio.transcription import AudioTranscriptionError
+
 
 DOUBAO_RESPONSE_ERROR = "豆包 ASR 未返回最终识别结果：{path}"
+
+
+class DoubaoMissingFinalResponseError(AudioTranscriptionError):
+    """豆包没有发送表示识别完成的最终响应。"""
 
 
 class AsrResponseProtocol(Protocol):

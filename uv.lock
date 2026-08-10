@@ -284,7 +284,7 @@ wheels = [
 [[package]]
 name = "doubaoime-asr"
 version = "0.2.0"
-source = { directory = "../doubaoime-asr" }
+source = { directory = "../../../../Projects/doubaoime-asr" }
 dependencies = [
     { name = "miniaudio" },
     { name = "opuslib" },
@@ -625,7 +625,7 @@ dev = [
 requires-dist = [
     { name = "certifi", specifier = ">=2026.6.17" },
     { name = "cryptography", specifier = ">=49.0.0" },
-    { name = "doubaoime-asr", directory = "../doubaoime-asr" },
+    { name = "doubaoime-asr", directory = "../../../../Projects/doubaoime-asr" },
     { name = "numpy", specifier = ">=2.4.1" },
     { name = "openai", specifier = ">=2.15.0" },
     { name = "requests", specifier = ">=2.34.2" },

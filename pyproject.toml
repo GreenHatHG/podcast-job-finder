@@ -79,4 +79,4 @@ min_confidence = 60
 sort_by_size = true
 
 [tool.uv.sources]
-doubaoime-asr = { path = "../doubaoime-asr" }
+doubaoime-asr = { path = "/Users/jooooody/Projects/doubaoime-asr" }
