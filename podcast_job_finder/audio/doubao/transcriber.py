@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -37,7 +38,11 @@ from podcast_job_finder.audio.transcription_quality import (
 )
 
 from .client import build_doubao_client
-from .config import DOUBAO_MAX_ATTEMPTS, DoubaoTranscriberConfig
+from .config import (
+    DOUBAO_RESPONSE_MAX_ATTEMPTS,
+    DOUBAO_RETRY_BASE_DELAY_SECONDS,
+    DoubaoTranscriberConfig,
+)
 from .output import build_doubao_transcription_output
 from .request_client import DoubaoRequestClient, SessionResponses
 from .response import (
@@ -57,7 +62,7 @@ from .truncation_probe import (
 
 logger = logging.getLogger(__name__)
 DOUBAO_ASR_SERVICE_ERROR = (
-    "豆包 ASR 在 {count} 个不同音频片段连续两次未返回最终识别结果，"
+    "豆包 ASR 在 {count} 个不同音频片段连续 {attempts} 次未返回最终识别结果，"
     "判定为豆包 ASR 服务或协议异常：threshold={threshold} latest_path={path}"
 )
 
@@ -66,9 +71,9 @@ DOUBAO_ASR_SERVICE_ERROR = (
 class _AttemptResult:
     """记录一次识别尝试的完整结果。
 
-    同一个片段最多可能有两次尝试：第一次是正常识别，第二次是发现“识别结果里
-    有一段人声没有对应文字”后的完整重试。这里把文字、每个字出现的时间和检查
-    结果放在一起，方便最后选择更可靠的一次。
+    同一个片段可能因为异常空响应尝试多次，也可能在发现“识别结果里有一段人声
+    没有对应文字”后进行一次完整重试。这里把文字、每个字出现的时间和检查结果
+    放在一起，方便最后选择更可靠的一次。
     """
 
     # 第几次识别，从 1 开始。
@@ -79,6 +84,8 @@ class _AttemptResult:
     alignments: tuple[CharacterAlignment, ...]
     # 用来判断是否有一段人声没有对应文字。
     assessment: TruncationAssessment
+    # 这次请求无法得到正常结果时，记录具体原因供检查点诊断使用。
+    error: str | None = None
 
     @property
     def mean_confidence(self) -> float:
@@ -94,10 +101,12 @@ class _AttemptResult:
 class _SegmentAttempts:
     """保存一个片段的识别尝试和可选的额外检查结果。"""
 
-    # 通常只有第一次尝试；确认有一段人声没有对应文字后会追加完整重试。
+    # 保存可用于输出和诊断的尝试；中间缺少最终响应的请求不会单独保存。
     attempts: list[_AttemptResult]
     # 只有第一次结果可疑时才会有这个值。
     probe: TruncationProbeDiagnostics | None = None
+    # 服务异常阈值需要等后续片段处理完才能确定时，暂缓写入检查点。
+    defer_checkpoint: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -297,6 +306,7 @@ class DoubaoAudioTranscriber:
                 previous_segment=previous_segment,
             ),
             previous_segment=previous_segment,
+            defer_checkpoint=attempts.defer_checkpoint,
         )
 
     def _run_segment_attempts(
@@ -306,52 +316,125 @@ class DoubaoAudioTranscriber:
     ) -> _SegmentAttempts:
         """完成一个片段从初次识别到可选重试的完整流程。
 
-        初次请求没有最终消息或文字为空时先重试一次。得到文字后，如果发现有
-        一段人声没有对应文字，就单独识别那段音频；确认那里确实有人说话，或
-        单独识别过程发生错误时，再完整重试当前片段。
+        初次请求没有最终消息或文字为空时按计划等待并重试。得到文字后，如果
+        发现有一段人声没有对应文字，就单独识别那段音频；确认那里确实有人说话，
+        或单独识别过程发生错误时，再完整重试当前片段。
         """
 
-        # 把第一次返回的消息整理成文字、每个字出现的时间和检查结果。
-        # 没有最终消息时先重试一次，区分偶发的网络或服务响应问题。
-        try:
-            initial_attempt = self._build_attempt_result(
-                segment,
-                initial_responses,
-                attempt=1,
-            )
-        except DoubaoMissingFinalResponseError:
-            return _SegmentAttempts([self._retry_missing_final_response(segment)])
-        attempts = _SegmentAttempts([initial_attempt])
+        attempts = self._run_response_attempts(segment, initial_responses)
+        latest_attempt = attempts.attempts[-1]
 
-        # 豆包返回最终消息但文字为空时也重试一次，用于排除偶发的空响应。
-        if not initial_attempt.response_summary.text:
-            retry_attempt = self._retry_empty_text(segment)
-            if retry_attempt is not None:
-                attempts.attempts.append(retry_attempt)
+        # 已经用完异常空响应重试次数时，保留豆包实际返回的空结果。
+        if not latest_attempt.response_summary.text:
             return attempts
 
         # 结果正常时不做额外请求，避免增加服务压力和处理时间。
-        if not initial_attempt.assessment.requires_truncation_probe:
+        if not latest_attempt.assessment.requires_truncation_probe:
             return attempts
 
         # 单独识别没有对应文字的那段音频，确认那里是否真的有人说话。
         attempts.probe = self._probe_runner.run(
             TruncationProbeRequest(
                 audio_path=segment.file_path,
-                assessment=initial_attempt.assessment,
+                assessment=latest_attempt.assessment,
             )
         )
         log_truncation_probe_result(
             segment_index=segment.index,
-            assessment=initial_attempt.assessment,
+            assessment=latest_attempt.assessment,
             probe=attempts.probe,
         )
         if probe_requires_full_retry(attempts.probe):
             # 探测确认需要重试时，重新识别完整片段，而不是只识别局部音频。
             attempts.attempts.append(
-                self._run_attempt(segment, attempt=DOUBAO_MAX_ATTEMPTS)
+                self._run_attempt(segment, attempt=latest_attempt.attempt + 1)
             )
         return attempts
+
+    def _run_response_attempts(
+        self,
+        segment: ExportedSpeechSegment,
+        initial_responses: SessionResponses,
+    ) -> _SegmentAttempts:
+        """重试缺少最终响应或文字为空的请求，直到得到非空文字。"""
+
+        completed_attempts: list[_AttemptResult] = []
+        last_missing_final_error: DoubaoMissingFinalResponseError | None = None
+        for attempt in range(1, DOUBAO_RESPONSE_MAX_ATTEMPTS + 1):
+            try:
+                attempt_result = (
+                    self._build_attempt_result(
+                        segment,
+                        initial_responses,
+                        attempt=attempt,
+                    )
+                    if attempt == 1
+                    else self._run_attempt(segment, attempt=attempt)
+                )
+            except DoubaoMissingFinalResponseError as error:
+                last_missing_final_error = error
+                retry_reason = "未返回最终识别结果"
+            else:
+                completed_attempts.append(attempt_result)
+                if attempt_result.response_summary.text:
+                    return _SegmentAttempts(completed_attempts)
+                retry_reason = "返回空文字"
+
+            if attempt < DOUBAO_RESPONSE_MAX_ATTEMPTS:
+                self._wait_before_response_retry(
+                    segment,
+                    attempt=attempt,
+                    reason=retry_reason,
+                )
+
+        if completed_attempts:
+            return _SegmentAttempts(completed_attempts)
+        # 每次请求要么加入 completed_attempts，要么记录缺少最终响应的错误。
+        # 运行到这里却两者都没有，说明重试流程本身出现了未预期的状态。
+        # 防止以后修改重试逻辑时产生“不执行任何请求，也没有记录错误”的异常状态
+        if last_missing_final_error is None:
+            raise AssertionError("豆包异常响应重试结束后没有可用结果或错误。")
+        self._record_missing_final_response_segment(segment)
+        logger.warning(
+            "豆包片段达到最大请求次数，暂存空结果；所有片段处理完成且未达到"
+            "服务异常阈值后再写入检查点：index=%d path=%s",
+            segment.index,
+            segment.file_path,
+        )
+        return _SegmentAttempts(
+            attempts=[
+                self._build_missing_final_attempt_result(
+                    segment,
+                    attempt=DOUBAO_RESPONSE_MAX_ATTEMPTS,
+                    error=last_missing_final_error,
+                )
+            ],
+            defer_checkpoint=True,
+        )
+
+    @staticmethod
+    def _wait_before_response_retry(
+        segment: ExportedSpeechSegment,
+        *,
+        attempt: int,
+        reason: str,
+    ) -> None:
+        """按指数增长的等待时间暂停，然后重试异常响应。"""
+
+        delay_seconds = DOUBAO_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+        logger.warning(
+            "豆包片段%s，将在 %.1f 秒后重试：index=%d attempt=%d/%d "
+            "next_attempt=%d/%d path=%s",
+            reason,
+            delay_seconds,
+            segment.index,
+            attempt,
+            DOUBAO_RESPONSE_MAX_ATTEMPTS,
+            attempt + 1,
+            DOUBAO_RESPONSE_MAX_ATTEMPTS,
+            segment.file_path,
+        )
+        time.sleep(delay_seconds)
 
     def _build_transcription_output(
         self,
@@ -401,66 +484,19 @@ class DoubaoAudioTranscriber:
         responses = self._request_client.collect_responses(segment.file_path)
         return self._build_attempt_result(segment, responses, attempt=attempt)
 
-    def _retry_missing_final_response(
-        self,
-        segment: ExportedSpeechSegment,
-    ) -> _AttemptResult:
-        """重试没有最终响应的片段，并累计连续两次失败的不同片段。"""
-
-        logger.warning(
-            "豆包片段未返回最终识别结果，使用相同音频重试：index=%d path=%s",
-            segment.index,
-            segment.file_path,
-        )
-        try:
-            retry_attempt = self._run_attempt(
-                segment,
-                attempt=DOUBAO_MAX_ATTEMPTS,
-            )
-        except DoubaoMissingFinalResponseError:
-            self._record_missing_final_response_segment(
-                segment,
-            )
-            raise
-        return retry_attempt
-
-    def _retry_empty_text(
-        self,
-        segment: ExportedSpeechSegment,
-    ) -> _AttemptResult | None:
-        """重试已正常结束但文字为空的片段，不计入服务异常。"""
-
-        logger.warning(
-            "豆包片段返回空文字，使用相同音频重试：index=%d path=%s",
-            segment.index,
-            segment.file_path,
-        )
-        try:
-            return self._run_attempt(
-                segment,
-                attempt=DOUBAO_MAX_ATTEMPTS,
-            )
-        except DoubaoMissingFinalResponseError:
-            logger.warning(
-                "豆包片段空文字重试未返回最终识别结果，保留第一次空结果："
-                "index=%d path=%s",
-                segment.index,
-                segment.file_path,
-            )
-            return None
-
     def _record_missing_final_response_segment(
         self,
         segment: ExportedSpeechSegment,
     ) -> None:
-        """记录连续两次缺少最终响应的片段，达到阈值时报告服务异常。"""
+        """记录所有请求都缺少最终响应的片段，达到阈值时报告服务异常。"""
 
         self._missing_final_segment_paths.add(segment.file_path)
         segment_count = len(self._missing_final_segment_paths)
         threshold = self._config.missing_final_segment_threshold
         logger.warning(
-            "豆包片段连续两次未返回最终识别结果：index=%d "
+            "豆包片段连续 %d 次未返回最终识别结果：index=%d "
             "missing_final_segments=%d threshold=%d path=%s",
+            DOUBAO_RESPONSE_MAX_ATTEMPTS,
             segment.index,
             segment_count,
             threshold,
@@ -471,6 +507,7 @@ class DoubaoAudioTranscriber:
         raise AudioTranscriptionError(
             DOUBAO_ASR_SERVICE_ERROR.format(
                 count=segment_count,
+                attempts=DOUBAO_RESPONSE_MAX_ATTEMPTS,
                 threshold=threshold,
                 path=segment.file_path,
             )
@@ -525,6 +562,36 @@ class DoubaoAudioTranscriber:
             assessment=assessment,
         )
 
+    def _build_missing_final_attempt_result(
+        self,
+        segment: ExportedSpeechSegment,
+        *,
+        attempt: int,
+        error: DoubaoMissingFinalResponseError,
+    ) -> _AttemptResult:
+        """为达到最大请求次数的片段创建可延迟保存的空结果。"""
+
+        assessment = assess_transcription_coverage(
+            segment.file_path,
+            (),
+            has_transcript=False,
+            speech_segment=segment.segment,
+            silence_padding_ms=self._config.silence_padding_ms,
+            vad_threshold=self._config.vad_threshold,
+        )
+        return _AttemptResult(
+            attempt=attempt,
+            response_summary=DoubaoResponseSummary(
+                text="",
+                raw_responses=(),
+                has_final_response=False,
+                has_error_response=False,
+            ),
+            alignments=(),
+            assessment=assessment,
+            error=str(error),
+        )
+
 
 def _build_failed_segment_context(
     segment: ExportedSpeechSegment,
@@ -575,4 +642,5 @@ def _build_attempt_diagnostics(
             if attempt.assessment.is_anomalous
             else ()
         ),
+        error=attempt.error,
     )

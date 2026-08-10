@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
+class _DeferredSegmentCheckpoint:
+    segment: ExportedSpeechSegment
+    transcribed_segment: TranscribedSpeechSegment
+
+
+@dataclass(slots=True)
+class _BatchTranscriptionState:
+    transcribed_segments: list[TranscribedSpeechSegment]
+    deferred_checkpoints: list[_DeferredSegmentCheckpoint]
+
+
+@dataclass(slots=True, frozen=True)
 class SegmentTranscriptionCheckpointStore:
     metadata: Mapping[str, object]
     expected_metadata: Mapping[str, object]
@@ -162,20 +174,22 @@ def _transcribe_batches_with_checkpoints(
 ) -> tuple[AudioTranscriptionResult, bool]:
     if transcriber.batch_size <= 0:
         raise ValueError("batch_size 必须大于 0。")
+    state = _BatchTranscriptionState([], [])
     if not resume:
-        transcribed_segments: list[TranscribedSpeechSegment] = []
         _transcribe_pending_batches(
             segments,
             transcriber=transcriber,
             checkpoint_store=checkpoint_store,
             previous_segment=None,
-            transcribed_segments=transcribed_segments,
+            state=state,
         )
-        return AudioTranscriptionResult(segments=transcribed_segments), False
+        _save_deferred_checkpoints(state.deferred_checkpoints, checkpoint_store)
+        return AudioTranscriptionResult(segments=state.transcribed_segments), False
     return _transcribe_with_sparse_checkpoints(
         segments,
         transcriber=transcriber,
         checkpoint_store=checkpoint_store,
+        state=state,
     )
 
 
@@ -184,8 +198,8 @@ def _transcribe_with_sparse_checkpoints(
     *,
     transcriber: BatchAudioTranscriberProtocol,
     checkpoint_store: SegmentTranscriptionCheckpointStore,
+    state: _BatchTranscriptionState,
 ) -> tuple[AudioTranscriptionResult, bool]:
-    transcribed_segments: list[TranscribedSpeechSegment] = []
     previous_segment = None
     all_segments_cached = bool(segments)
     index = 0
@@ -200,7 +214,7 @@ def _transcribe_with_sparse_checkpoints(
             _append_cached_segment(
                 segment,
                 cached_segment,
-                transcribed_segments=transcribed_segments,
+                transcribed_segments=state.transcribed_segments,
             )
             previous_segment = cached_segment
             index += 1
@@ -217,11 +231,14 @@ def _transcribe_with_sparse_checkpoints(
             transcriber=transcriber,
             checkpoint_store=checkpoint_store,
             previous_segment=previous_segment,
-            transcribed_segments=transcribed_segments,
+            state=state,
         )
         index = run_end
 
-    return AudioTranscriptionResult(segments=transcribed_segments), all_segments_cached
+    _save_deferred_checkpoints(state.deferred_checkpoints, checkpoint_store)
+    return AudioTranscriptionResult(
+        segments=state.transcribed_segments
+    ), all_segments_cached
 
 
 def _transcribe_pending_batches(
@@ -230,7 +247,7 @@ def _transcribe_pending_batches(
     transcriber: BatchAudioTranscriberProtocol,
     checkpoint_store: SegmentTranscriptionCheckpointStore,
     previous_segment: TranscribedSpeechSegment | None,
-    transcribed_segments: list[TranscribedSpeechSegment],
+    state: _BatchTranscriptionState,
 ) -> TranscribedSpeechSegment | None:
     current_previous = previous_segment
     expected_segments = {
@@ -263,18 +280,40 @@ def _transcribe_pending_batches(
                 segment,
                 item.output,
             )
-            checkpoint_store.save(
-                segment.file_path.with_suffix(".json"),
-                exported_segment=segment,
-                transcribed_segment=transcribed_segment,
-            )
-            transcribed_segments.append(transcribed_segment)
+            if item.defer_checkpoint:
+                state.deferred_checkpoints.append(
+                    _DeferredSegmentCheckpoint(segment, transcribed_segment)
+                )
+            else:
+                checkpoint_store.save(
+                    segment.file_path.with_suffix(".json"),
+                    exported_segment=segment,
+                    transcribed_segment=transcribed_segment,
+                )
+            state.transcribed_segments.append(transcribed_segment)
             processed_paths.add(segment.file_path)
             current_previous = transcribed_segment
             last_processed_position = segment_position
     if processed_paths != expected_paths:
         raise ValueError("批量转写结果数量与音频片段数量不一致。")
     return current_previous
+
+
+def _save_deferred_checkpoints(
+    deferred_checkpoints: Sequence[_DeferredSegmentCheckpoint],
+    checkpoint_store: SegmentTranscriptionCheckpointStore,
+) -> None:
+    for item in deferred_checkpoints:
+        logger.info(
+            "所有音频片段已处理完成，写入延迟的空转写检查点：index=%d path=%s",
+            item.segment.index,
+            item.segment.file_path.with_suffix(".json"),
+        )
+        checkpoint_store.save(
+            item.segment.file_path.with_suffix(".json"),
+            exported_segment=item.segment,
+            transcribed_segment=item.transcribed_segment,
+        )
 
 
 def _validate_batch_transcription_item(

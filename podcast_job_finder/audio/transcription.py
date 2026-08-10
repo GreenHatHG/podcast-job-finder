@@ -124,6 +124,8 @@ class TranscriptionSegmentResult:
     segment: ExportedSpeechSegment
     output: TranscriptionOutput
     previous_segment: TranscribedSpeechSegment | None
+    # 需要等整批处理成功后才能确认有效的结果，不立即写入片段检查点。
+    defer_checkpoint: bool = False
 
 
 @dataclass(slots=True, frozen=True)
