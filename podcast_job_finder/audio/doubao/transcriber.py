@@ -24,6 +24,7 @@ from podcast_job_finder.audio.transcription import (
     TranscribedSpeechSegment,
     TranscriptionOutput,
     build_transcribed_speech_segment,
+    validate_previous_segment_order,
 )
 from podcast_job_finder.audio.transcription_diagnostics import (
     TranscriptionAttemptDiagnostics,
@@ -242,7 +243,7 @@ class DoubaoAudioTranscriber:
             # 等待后台请求完成，然后取得豆包这次返回的全部消息。
             responses = pending_request.future.result()
         except Exception as error:  # pylint: disable=broad-exception-caught
-            # 失败片段仍然保留时间范围，后面的片段可以继续去掉重复音频。
+            # 后续片段只需要失败片段的编号和结束时间来去除重叠音频。
             return (
                 None,
                 _build_failed_segment_context(pending_request.segment),
@@ -250,13 +251,16 @@ class DoubaoAudioTranscriber:
             )
         try:
             # 整理返回消息，检查是否有一段人声没有对应文字，并在需要时重试。
+            validate_previous_segment_order(
+                pending_request.segment,
+                previous_segment,
+            )
             item = self._build_transcription_item(
                 pending_request.segment,
                 responses,
                 previous_segment=previous_segment,
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
-            # 结果整理阶段也可能失败，按单个片段失败处理。
             return (
                 None,
                 _build_failed_segment_context(pending_request.segment),
@@ -433,11 +437,7 @@ class DoubaoAudioTranscriber:
 def _build_failed_segment_context(
     segment: ExportedSpeechSegment,
 ) -> TranscribedSpeechSegment:
-    """为失败片段创建一个只有时间边界的占位信息。
-
-    后续片段仍然需要知道这个片段在原音频中的结束位置，才能去除相邻片段
-    之间重复的音频内容。
-    """
+    """为失败片段创建只用于处理后续片段的上下文。"""
 
     return TranscribedSpeechSegment(
         index=segment.index,

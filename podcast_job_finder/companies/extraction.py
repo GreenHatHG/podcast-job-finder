@@ -22,7 +22,7 @@ from podcast_job_finder.llm import (
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
-from podcast_job_finder.xiaoyuzhou.models import CommentInfo, EpisodeInfo
+from podcast_job_finder.episode import CommentInfo, EpisodeInfo
 
 
 TITLE_SECTION_LABEL = "标题"

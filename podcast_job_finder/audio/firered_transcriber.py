@@ -77,19 +77,6 @@ class FireRedTranscriberConfig:
             "punc_model_dir": str(self.punc_model_dir.resolve()),
         }
 
-    def signature_payload(self) -> dict[str, object]:
-        return {
-            **self.metadata(),
-            "ort_intra_op_threads": self.ort_intra_op_threads,
-            "model_files": {
-                "asr": _build_file_signatures(self.asr_model_dir, REQUIRED_ASR_FILES),
-                "punc": _build_file_signatures(
-                    self.punc_model_dir,
-                    REQUIRED_PUNC_FILES,
-                ),
-            },
-        }
-
 
 class FireRedAudioTranscriber:
     def __init__(self, config: FireRedTranscriberConfig) -> None:
@@ -330,16 +317,3 @@ def _require_model_files(model_dir: Path, relative_paths: tuple[str, ...]) -> No
         raise FireRedConfigError(
             f"FireRed 模型目录缺少文件：{model_dir}，{', '.join(missing_paths)}"
         )
-
-
-def _build_file_signatures(
-    model_dir: Path,
-    relative_paths: tuple[str, ...],
-) -> dict[str, dict[str, int]]:
-    return {
-        relative_path: {
-            "size": (model_dir / relative_path).stat().st_size,
-            "mtime_ns": (model_dir / relative_path).stat().st_mtime_ns,
-        }
-        for relative_path in relative_paths
-    }

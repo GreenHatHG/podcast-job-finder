@@ -6,7 +6,7 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import Final
 
-from podcast_job_finder.xiaoyuzhou.models import CommentInfo, EpisodeInfo
+from podcast_job_finder.episode.models import CommentInfo, EpisodeInfo
 
 
 NEXT_DATA_SCRIPT_PATTERN = re.compile(

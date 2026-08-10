@@ -34,7 +34,7 @@ from podcast_job_finder.companies.transcript_chunks import (
     build_transcript_chunks,
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
-from podcast_job_finder.xiaoyuzhou.models import EpisodeInfo
+from podcast_job_finder.episode import EpisodeInfo
 
 
 CHUNK_CHECKPOINT_KEY_TEMPLATE: Final = "chunk_{index:04d}"

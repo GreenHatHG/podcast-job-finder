@@ -23,7 +23,6 @@ from podcast_job_finder.audio.firered_transcriber import (
 )
 from podcast_job_finder.audio.llm_transcriber import (
     LlmAudioTranscriber,
-    TRANSCRIPTION_PROMPT_TEMPLATE,
 )
 from podcast_job_finder.audio.segment_export import (
     MP3_SEGMENT_AUDIO_FORMAT,
@@ -75,7 +74,6 @@ class AudioTranscriptionConfigError(ValueError):
 class AudioTranscriptionRuntime:
     transcriber: AudioTranscriberProtocol
     metadata: Mapping[str, object]
-    signature_payload: Mapping[str, object]
     segment_audio_format: SegmentAudioFormat
     vad_config: VadConfig = VadConfig()
 
@@ -114,10 +112,6 @@ def _load_llm_runtime() -> AudioTranscriptionRuntime:
             retry_config=runtime.retry_config,
         ),
         metadata=metadata,
-        signature_payload={
-            **metadata,
-            "prompt_template": TRANSCRIPTION_PROMPT_TEMPLATE,
-        },
         segment_audio_format=MP3_SEGMENT_AUDIO_FORMAT,
     )
 
@@ -143,7 +137,6 @@ def _load_firered_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRunti
     return AudioTranscriptionRuntime(
         transcriber=FireRedAudioTranscriber(config),
         metadata=config.metadata(),
-        signature_payload=config.signature_payload(),
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
     )
 
@@ -188,7 +181,6 @@ def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntim
     return AudioTranscriptionRuntime(
         transcriber=DoubaoAudioTranscriber(config),
         metadata=metadata,
-        signature_payload=config.signature_payload(),
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
         vad_config=vad_config,
     )

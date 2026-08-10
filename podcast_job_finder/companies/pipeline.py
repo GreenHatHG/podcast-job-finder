@@ -30,7 +30,7 @@ from podcast_job_finder.llm import (
     OpenAiCompatibleLlmError,
 )
 from podcast_job_finder.llm.rate_limit import format_rate
-from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
+from podcast_job_finder.episode import EpisodeParseError
 from podcast_job_finder.tracing import trace_id_var
 
 
@@ -56,7 +56,7 @@ EXPECTED_EPISODE_ERRORS: Final = (
 
 
 @dataclass(slots=True, frozen=True)
-class PidEpisodePipelineResult:
+class BatchEpisodePipelineResult:
     episode_results: list[dict]
     success_count: int
     fail_count: int
@@ -94,13 +94,13 @@ class _PipelineSharedState:
     fatal_error_state: _FatalErrorState
 
 
-def run_pid_episode_pipeline(
+def run_batch_episode_pipeline(
     *,
     work_items: Sequence[EpisodeWorkItem],
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
     rate_config: PipelineRateConfig,
-) -> PidEpisodePipelineResult:
+) -> BatchEpisodePipelineResult:
     logger.info(
         "启动节目流水线：总数=%d 单集页面请求速率=%s 页面公司提取 LLM 速率=%s",
         len(work_items),
@@ -154,7 +154,7 @@ def _run_pipeline_workers(
 
 def _build_pipeline_result(
     shared_state: _PipelineSharedState,
-) -> PidEpisodePipelineResult:
+) -> BatchEpisodePipelineResult:
     fatal_error = shared_state.fatal_error_state.get()
     if fatal_error is not None:
         raise fatal_error
@@ -171,7 +171,7 @@ def _build_pipeline_result(
         if result.get("status") == RESULT_STATUS_SUCCESS
     )
     fail_count = len(finalized_results) - success_count
-    return PidEpisodePipelineResult(
+    return BatchEpisodePipelineResult(
         episode_results=finalized_results,
         success_count=success_count,
         fail_count=fail_count,

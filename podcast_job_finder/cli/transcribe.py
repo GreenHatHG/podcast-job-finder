@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -16,12 +15,13 @@ from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
-    detect_and_export_speech_segments,
+)
+from podcast_job_finder.audio.speech_segment_checkpoint import (
+    SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
+    restore_or_export_speech_segments,
 )
 from podcast_job_finder.audio.transcription_checkpoint import (
-    TRANSCRIPTION_CACHE_VERSION,
     SegmentTranscriptionCheckpointStore,
-    build_audio_transcription_runtime_signature,
     transcribe_speech_segments_with_checkpoints,
 )
 from podcast_job_finder.audio.segment_export import (
@@ -113,37 +113,33 @@ def _run_transcription(
         transcription_runtime=transcription_runtime,
     )
     vad_config = transcription_runtime.vad_config
-    exported_segments = detect_and_export_speech_segments(
-        args.audio_path,
+    source_metadata = _build_local_audio_source_metadata(args.audio_path)
+    checkpoint_store = SegmentTranscriptionCheckpointStore(
+        metadata=source_metadata,
+        expected_metadata=source_metadata,
+    )
+    exported_segments = restore_or_export_speech_segments(
+        source_path=args.audio_path,
         output_dir=args.output_dir,
-        config=vad_config,
+        checkpoint_path=args.output_dir / SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
+        vad_config=vad_config,
         export_config=SpeechSegmentExportConfig(
             silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
             audio_format=segment_audio_format,
             overwrite=True,
         ),
+        resume=args.resume,
     )
     selected_segments = (
         exported_segments[: args.max_segments]
         if args.max_segments is not None
         else exported_segments
     )
-    source_metadata = _build_local_audio_source_metadata(args.audio_path)
-    checkpoint_store = SegmentTranscriptionCheckpointStore(
-        runtime_signature=build_audio_transcription_runtime_signature(
-            transcriber_signature=transcription_runtime.signature_payload,
-            segment_audio_format=segment_audio_format,
-            vad_config=vad_config,
-        ),
-        metadata=source_metadata,
-        expected_metadata=source_metadata,
-        strict_validation=args.strict_checkpoint_validation,
-    )
     result, _ = transcribe_speech_segments_with_checkpoints(
         selected_segments,
         transcriber=transcription_runtime.transcriber,
         checkpoint_store=checkpoint_store,
-        overwrite=args.overwrite,
+        resume=args.resume,
     )
     article_path = args.output_dir / TRANSCRIPTION_ARTICLE_FILE_NAME
     save_transcription_article(
@@ -165,8 +161,6 @@ def _run_transcription(
     return save_audio_transcription_manifest(
         args.output_dir / TRANSCRIPTION_FILE_NAME,
         metadata={
-            "cache_version": TRANSCRIPTION_CACHE_VERSION,
-            "runtime_signature": checkpoint_store.runtime_signature,
             **source_metadata,
             **transcription_runtime.metadata,
             "audio_path": str(args.audio_path),
@@ -222,21 +216,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         choices=SEGMENT_AUDIO_FORMAT_CHOICES,
         default=AUTO_SEGMENT_AUDIO_FORMAT,
     )
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
-        "--strict-checkpoint-validation",
-        action="store_true",
-    )
+    parser.add_argument("--resume", action="store_true")
     return parser
 
 
 def _build_local_audio_source_metadata(audio_path: Path) -> dict[str, object]:
-    with audio_path.open("rb") as file_obj:
-        content_sha256 = hashlib.file_digest(file_obj, "sha256").hexdigest()
     return {
         "source_type": LOCAL_AUDIO_SOURCE_TYPE,
         "source_audio_path": str(audio_path.resolve()),
-        "source_audio_sha256": content_sha256,
     }
 
 

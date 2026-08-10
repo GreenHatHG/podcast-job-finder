@@ -9,10 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Final, Iterator
 
-from podcast_job_finder.xiaoyuzhou.episode_audio.errors import (
-    EpisodeAudioDownloadError,
-)
-from podcast_job_finder.xiaoyuzhou.episode_audio.http import download_audio_content
+from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
+from podcast_job_finder.audio.episode_audio.http import download_audio_content
 
 
 logger = logging.getLogger(__name__)

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-from dataclasses import asdict
 from pathlib import Path
 from typing import Final, Mapping, Sequence
 
@@ -11,45 +9,16 @@ from podcast_job_finder.audio.segment_export import (
     ExportedSpeechSegment,
     SegmentAudioFormat,
     SpeechSegmentExportConfig,
-    build_segment_audio_signature,
 )
 from podcast_job_finder.audio.speech_pipeline import detect_and_export_speech_segments
-from podcast_job_finder.audio.transcription_checkpoint import (
-    SegmentTranscriptionCheckpointStore,
-)
-from podcast_job_finder.audio.vad import VAD_SAMPLE_RATE, SpeechSegment, VadConfig
+from podcast_job_finder.audio.vad import SpeechSegment, VadConfig
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
-from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
 SPEECH_SEGMENT_CHECKPOINT_FILE_NAME: Final = "speech_segments.json"
-SPEECH_SEGMENT_CHECKPOINT_VERSION: Final = 1
-SEGMENT_FILE_PATTERN: Final = re.compile(
-    r"^segment_(?P<index>\d+)_(?P<start>\d{2,}-\d{2}-\d{2}\.\d{3})_"
-    r"(?P<end>\d{2,}-\d{2}-\d{2}\.\d{3})\.(?P<format>mp3|wav)$"
-)
-MILLISECONDS_PER_SECOND: Final = 1_000
-SECONDS_PER_MINUTE: Final = 60
-MINUTES_PER_HOUR: Final = 60
 
 logger = logging.getLogger(__name__)
-
-
-def build_speech_segment_runtime_signature(
-    *,
-    vad_config: VadConfig,
-    silence_padding_ms: int,
-    audio_format: SegmentAudioFormat,
-) -> str:
-    return build_runtime_signature_hash(
-        {
-            "cache_version": SPEECH_SEGMENT_CHECKPOINT_VERSION,
-            "vad_config": asdict(vad_config),
-            "silence_padding_ms": silence_padding_ms,
-            "segment_audio": build_segment_audio_signature(audio_format),
-        }
-    )
 
 
 def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
@@ -59,21 +28,16 @@ def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
     checkpoint_path: Path,
     vad_config: VadConfig,
     export_config: SpeechSegmentExportConfig,
-    transcription_checkpoint_store: SegmentTranscriptionCheckpointStore,
+    resume: bool = False,
 ) -> list[ExportedSpeechSegment]:
-    runtime_signature = build_speech_segment_runtime_signature(
-        vad_config=vad_config,
-        silence_padding_ms=export_config.silence_padding_ms,
-        audio_format=export_config.audio_format,
-    )
-    checkpoint_exists = checkpoint_path.exists()
-    restored_segments = load_speech_segment_checkpoint(
-        checkpoint_path,
-        source_path=source_path,
-        output_dir=output_dir,
-        runtime_signature=runtime_signature,
-        audio_format=export_config.audio_format,
-    )
+    restored_segments = None
+    if resume:
+        restored_segments = load_speech_segment_checkpoint(
+            checkpoint_path,
+            source_path=source_path,
+            output_dir=output_dir,
+            audio_format=export_config.audio_format,
+        )
     if restored_segments is not None:
         logger.info(
             "命中语音切分检查点，跳过 VAD：source_path=%s segment_count=%d",
@@ -82,32 +46,15 @@ def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
         )
         return restored_segments
 
-    restored_segments = (
-        None
-        if checkpoint_exists
-        else _restore_legacy_speech_segments(
-            output_dir,
-            audio_format=export_config.audio_format,
-            checkpoint_store=transcription_checkpoint_store,
-        )
+    restored_segments = detect_and_export_speech_segments(
+        source_path,
+        output_dir=output_dir,
+        config=vad_config,
+        export_config=export_config,
     )
-    if restored_segments is not None:
-        logger.info(
-            "导入已有语音片段，跳过 VAD：source_path=%s segment_count=%d",
-            source_path,
-            len(restored_segments),
-        )
-    else:
-        restored_segments = detect_and_export_speech_segments(
-            source_path,
-            output_dir=output_dir,
-            config=vad_config,
-            export_config=export_config,
-        )
     save_speech_segment_checkpoint(
         checkpoint_path,
         source_path=source_path,
-        runtime_signature=runtime_signature,
         segments=restored_segments,
     )
     return restored_segments
@@ -118,7 +65,6 @@ def load_speech_segment_checkpoint(
     *,
     source_path: Path,
     output_dir: Path,
-    runtime_signature: str,
     audio_format: SegmentAudioFormat,
 ) -> list[ExportedSpeechSegment] | None:
     if not path.is_file():
@@ -128,7 +74,6 @@ def load_speech_segment_checkpoint(
         _validate_checkpoint_metadata(
             payload,
             source_path=source_path,
-            runtime_signature=runtime_signature,
         )
         segments = _parse_segment_records(
             payload.get("segments"),
@@ -149,65 +94,16 @@ def save_speech_segment_checkpoint(
     path: Path,
     *,
     source_path: Path,
-    runtime_signature: str,
     segments: Sequence[ExportedSpeechSegment],
 ) -> None:
     payload = {
-        "cache_version": SPEECH_SEGMENT_CHECKPOINT_VERSION,
-        "runtime_signature": runtime_signature,
         "created_at": build_utc_timestamp().text,
-        "source": _build_source_fingerprint(source_path),
+        "source_audio_path": str(source_path.resolve()),
         "segment_count": len(segments),
         "segments": [_build_segment_record(segment) for segment in segments],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(path, payload, mode=DEFAULT_FILE_CREATION_MODE)
-
-
-def discover_legacy_speech_segments(
-    output_dir: Path,
-    *,
-    audio_format: SegmentAudioFormat,
-) -> list[ExportedSpeechSegment]:
-    records = []
-    for file_path in output_dir.glob(f"segment_*.{audio_format}"):
-        match = SEGMENT_FILE_PATTERN.fullmatch(file_path.name)
-        if match is None or match.group("format") != audio_format:
-            continue
-        records.append(_build_legacy_segment(file_path, match.groupdict()))
-    records.sort(key=lambda segment: segment.index)
-    if records:
-        _validate_contiguous_segments(records)
-    return records
-
-
-def _restore_legacy_speech_segments(
-    output_dir: Path,
-    *,
-    audio_format: SegmentAudioFormat,
-    checkpoint_store: SegmentTranscriptionCheckpointStore,
-) -> list[ExportedSpeechSegment] | None:
-    try:
-        segments = discover_legacy_speech_segments(
-            output_dir,
-            audio_format=audio_format,
-        )
-    except (OSError, ValueError) as error:
-        logger.warning(
-            "检查已有语音片段失败，将重新检测：output_dir=%s error=%s",
-            output_dir,
-            error,
-        )
-        return None
-    if not segments:
-        return None
-    first_segment = segments[0]
-    first_checkpoint = checkpoint_store.load(
-        first_segment.file_path.with_suffix(".json"),
-        exported_segment=first_segment,
-        previous_segment=None,
-    )
-    return segments if first_checkpoint is not None else None
 
 
 def _read_json_object(path: Path) -> dict[str, object]:
@@ -222,28 +118,28 @@ def _validate_checkpoint_metadata(
     payload: Mapping[str, object],
     *,
     source_path: Path,
-    runtime_signature: str,
 ) -> None:
-    expected_values = {
-        "cache_version": SPEECH_SEGMENT_CHECKPOINT_VERSION,
-        "runtime_signature": runtime_signature,
-        "source": _build_source_fingerprint(source_path),
-    }
-    for field_name, expected_value in expected_values.items():
-        if payload.get(field_name) != expected_value:
-            raise ValueError(f"语音切分检查点字段 {field_name} 已变化。")
+    if not source_path.is_file() or source_path.stat().st_size <= 0:
+        raise ValueError(f"源音频文件无效：{source_path}")
+    source_audio_path = payload.get("source_audio_path")
+    if isinstance(source_audio_path, str):
+        if source_audio_path != str(source_path.resolve()):
+            raise ValueError("语音切分检查点字段 source_audio_path 已变化。")
+        return
 
-
-def _build_source_fingerprint(path: Path) -> dict[str, int | str]:
-    resolved_path = path.resolve()
-    stat_result = resolved_path.stat()
-    if not resolved_path.is_file() or stat_result.st_size <= 0:
-        raise ValueError(f"源音频文件无效：{resolved_path}")
-    return {
-        "path": str(resolved_path),
-        "size_bytes": stat_result.st_size,
-        "modified_at_ns": stat_result.st_mtime_ns,
+    legacy_source = payload.get("source")
+    if not isinstance(legacy_source, Mapping):
+        raise ValueError("语音切分检查点缺少源音频信息。")
+    expected_source = {
+        "path": str(source_path.resolve()),
+        "size_bytes": source_path.stat().st_size,
+        "modified_at_ns": source_path.stat().st_mtime_ns,
     }
+    if any(
+        legacy_source.get(field_name) != expected_value
+        for field_name, expected_value in expected_source.items()
+    ):
+        raise ValueError("语音切分检查点中的源音频信息已变化。")
 
 
 def _build_segment_record(segment: ExportedSpeechSegment) -> dict[str, int | str]:
@@ -303,25 +199,6 @@ def _parse_segment_record(
     )
 
 
-def _build_legacy_segment(
-    file_path: Path,
-    fields: Mapping[str, str],
-) -> ExportedSpeechSegment:
-    _validate_segment_file(
-        file_path,
-        output_dir=file_path.parent,
-        audio_format=fields["format"],
-    )
-    start_ms = _parse_file_timestamp(fields["start"])
-    end_ms = _parse_file_timestamp(fields["end"])
-    return _build_exported_segment(
-        index=int(fields["index"]),
-        start_sample=_milliseconds_to_samples(start_ms),
-        end_sample=_milliseconds_to_samples(end_ms),
-        file_path=file_path.resolve(),
-    )
-
-
 def _build_exported_segment(
     *,
     index: int,
@@ -363,20 +240,6 @@ def _validate_contiguous_segments(segments: Sequence[ExportedSpeechSegment]) -> 
                 "语音片段编号不连续："
                 f"expected_index={expected_index} actual_index={segment.index}"
             )
-
-
-def _parse_file_timestamp(value: str) -> int:
-    hours_text, minutes_text, seconds_text = value.split("-")
-    seconds, milliseconds = seconds_text.split(".")
-    return (
-        int(hours_text) * MINUTES_PER_HOUR * SECONDS_PER_MINUTE
-        + int(minutes_text) * SECONDS_PER_MINUTE
-        + int(seconds)
-    ) * MILLISECONDS_PER_SECOND + int(milliseconds)
-
-
-def _milliseconds_to_samples(value: int) -> int:
-    return round(value * VAD_SAMPLE_RATE / MILLISECONDS_PER_SECOND)
 
 
 def _require_integer(payload: Mapping[str, object], field_name: str) -> int:

@@ -26,7 +26,7 @@ from podcast_job_finder.companies.checkpoint import (
     LlmCheckpointStore,
 )
 from podcast_job_finder.llm import LlmRetryConfig
-from podcast_job_finder.xiaoyuzhou.episode_client import (
+from podcast_job_finder.episode import (
     extract_episode_id_from_url,
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
@@ -52,6 +52,7 @@ class EpisodeWorkItem:
     eid: str | None = None
     title: str | None = None
     pub_date: str | None = None
+    audio_url: str | None = None
 
     def resolve_episode_id(self) -> str | None:
         normalized_eid = (self.eid or "").strip()

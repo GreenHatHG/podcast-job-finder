@@ -47,19 +47,6 @@ class FireRedAlignmentConfig:
             "timestamp_model_dir": str(self.asr_model_dir.resolve()),
         }
 
-    def signature_payload(self) -> dict[str, object]:
-        return {
-            **self.metadata(),
-            "ort_intra_op_threads": self.ort_intra_op_threads,
-            "model_files": {
-                name: {
-                    "size": (self.asr_model_dir / name).stat().st_size,
-                    "mtime_ns": (self.asr_model_dir / name).stat().st_mtime_ns,
-                }
-                for name in REQUIRED_ALIGNMENT_MODEL_FILES
-            },
-        }
-
 
 @dataclass(slots=True, frozen=True)
 class CharacterAlignment:

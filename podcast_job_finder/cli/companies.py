@@ -7,48 +7,13 @@ import sys
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
-from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
-from podcast_job_finder.companies.audio_pipeline import (
-    run_pid_audio_company_extraction,
+from podcast_job_finder.audio.batch_transcription import (
+    BatchAudioTranscriptionError,
+    BatchAudioTranscriptionRuntime,
+    run_batch_audio_transcription,
+    save_batch_audio_transcription_report,
 )
-from podcast_job_finder.companies.episode_runner import (
-    EpisodeWorkItem,
-    run_episode_company_extraction,
-)
-from podcast_job_finder.companies.pipeline import (
-    EXPECTED_EPISODE_ERRORS,
-    run_pid_episode_pipeline,
-)
-from podcast_job_finder.companies.rate_limit import (
-    load_pipeline_rate_config_from_env,
-)
-from podcast_job_finder.companies.reporting import PidReportData, save_pid_reports
-from podcast_job_finder.companies.runtime import (
-    load_audio_extraction_runtime_from_env,
-    load_page_extraction_runtime_from_env,
-)
-from podcast_job_finder.logging import configure_logging
-from podcast_job_finder.xiaoyuzhou.episode_client import build_episode_url
-from podcast_job_finder.xiaoyuzhou.xyz.auth_store import (
-    XiaoyuzhouAuthStoreError,
-    build_auth_session,
-    load_auth_session,
-    save_auth_session,
-)
-from podcast_job_finder.xiaoyuzhou.xyz.client import (
-    DEFAULT_AREA_CODE,
-    DEFAULT_XYZ_BASE_URL,
-    XyzClient,
-    XyzClientError,
-)
-from podcast_job_finder.xiaoyuzhou.xyz.podcast_service import list_podcast_episodes
-from podcast_job_finder.audio.pid_transcription import (
-    PidAudioTranscriptionError,
-    PidAudioTranscriptionRuntime,
-    run_pid_audio_transcription,
-    save_pid_audio_transcription_report,
-)
-from podcast_job_finder.audio.pid_transcription_schedule import (
+from podcast_job_finder.audio.batch_transcription_schedule import (
     DEFAULT_AUDIO_PROCESSING_MODE,
     SUPPORTED_AUDIO_PROCESSING_MODES,
     AudioProcessingMode,
@@ -57,60 +22,71 @@ from podcast_job_finder.audio.transcription_runtime import (
     AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
 )
+from podcast_job_finder.companies.audio_pipeline import (
+    run_batch_audio_company_extraction,
+)
+from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
+from podcast_job_finder.companies.episode_runner import (
+    EpisodeWorkItem,
+    run_episode_company_extraction,
+)
+from podcast_job_finder.companies.pipeline import (
+    EXPECTED_EPISODE_ERRORS,
+    run_batch_episode_pipeline,
+)
+from podcast_job_finder.companies.rate_limit import (
+    load_pipeline_rate_config_from_env,
+)
+from podcast_job_finder.companies.reporting import FeedReportData, save_feed_reports
+from podcast_job_finder.companies.runtime import (
+    load_audio_extraction_runtime_from_env,
+    load_page_extraction_runtime_from_env,
+)
+from podcast_job_finder.logging import configure_logging
+from podcast_job_finder.rss.feed import RssFeed, RssFeedError, fetch_rss_feed
+from podcast_job_finder.episode import build_episode_url
 
 
 PROGRAM_NAME: Final = "podcast-find-jobs"
+PAGE_SOURCE: Final = "page"
+AUDIO_SOURCE: Final = "audio"
+SUPPORTED_FEED_SOURCES: Final = (PAGE_SOURCE, AUDIO_SOURCE)
+HELP_FLAGS: Final = frozenset({"-h", "--help"})
 COMMAND_USAGE_TEXT: Final = "\n".join(
     [
         f"用法：{PROGRAM_NAME} <episode_url>",
-        f"      {PROGRAM_NAME} send-code --mobile <手机号> [--area-code +86]",
-        f"      {PROGRAM_NAME} login --mobile <手机号> --code <验证码> [--area-code +86]",
         (
-            f"      {PROGRAM_NAME} pid --pid <pid> [--all] "
+            f"      {PROGRAM_NAME} --feed-url <RSS地址> "
             "[--max-episodes <正整数>] [--source page|audio] "
             "[--transcribe-only] [--audio-processing-mode sequential|download-first] "
-            "[--strict-checkpoint-validation]"
+            "[--resume]"
         ),
     ]
 )
-logger = logging.getLogger(__name__)
-SEND_CODE_COMMAND: Final = "send-code"
-LOGIN_COMMAND: Final = "login"
-PID_COMMAND: Final = "pid"
-PAGE_SOURCE: Final = "page"
-AUDIO_SOURCE: Final = "audio"
-SUPPORTED_PID_SOURCES: Final = (PAGE_SOURCE, AUDIO_SOURCE)
-HELP_FLAGS: Final = frozenset({"-h", "--help"})
-SUPPORTED_COMMANDS: Final = frozenset(
-    {
-        SEND_CODE_COMMAND,
-        LOGIN_COMMAND,
-        PID_COMMAND,
-    }
-)
-XYZ_SERVICE_URL_TEXT: Final = DEFAULT_XYZ_BASE_URL
-SUCCESS_STATUS_TEXT: Final = "ok"
 TRANSCRIBE_ONLY_SOURCE_ERROR: Final = (
     "--transcribe-only 只能与 --source audio 一起使用。"
 )
+RESUME_SOURCE_ERROR: Final = "--resume 只能与 --source audio 一起使用。"
+
+logger = logging.getLogger(__name__)
 
 
 class CliUsageError(ValueError):
-    """Raised when the command line arguments are invalid."""
+    """命令行参数无效。"""
 
 
 EXPECTED_CLI_ERRORS: Final = (
     CliUsageError,
+    RssFeedError,
     AudioTranscriptionConfigError,
-    PidAudioTranscriptionError,
-    XiaoyuzhouAuthStoreError,
-    XyzClientError,
+    BatchAudioTranscriptionError,
     *EXPECTED_EPISODE_ERRORS,
 )
 
 
 class _CliArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
+        del message
         raise CliUsageError(COMMAND_USAGE_TEXT)
 
 
@@ -125,8 +101,8 @@ def main() -> int:
         return 0
 
     try:
-        if raw_args[0] in SUPPORTED_COMMANDS:
-            return _run_command(raw_args)
+        if raw_args[0].startswith("-"):
+            return _run_feed_command(raw_args)
         if len(raw_args) != 1:
             raise CliUsageError(COMMAND_USAGE_TEXT)
         return _run_single_episode_mode(raw_args[0])
@@ -135,51 +111,62 @@ def main() -> int:
         return 1
 
 
-def _run_command(raw_args: Sequence[str]) -> int:
-    parser = _build_command_parser()
-    parsed_args = parser.parse_args(list(raw_args))
-    xyz_client = XyzClient()
-    if parsed_args.command == SEND_CODE_COMMAND:
-        return _run_send_code_mode(parsed_args, xyz_client)
-    if parsed_args.command == LOGIN_COMMAND:
-        return _run_login_mode(parsed_args, xyz_client)
-    if parsed_args.command == PID_COMMAND:
-        return _run_pid_mode(parsed_args, xyz_client)
-    raise CliUsageError(COMMAND_USAGE_TEXT)
+def _run_feed_command(raw_args: Sequence[str]) -> int:
+    parsed_args = _build_feed_parser().parse_args(list(raw_args))
+    if parsed_args.transcribe_only and parsed_args.source != AUDIO_SOURCE:
+        raise CliUsageError(TRANSCRIBE_ONLY_SOURCE_ERROR)
+    if parsed_args.resume and parsed_args.source != AUDIO_SOURCE:
+        raise CliUsageError(RESUME_SOURCE_ERROR)
+    if not parsed_args.feed_url:
+        raise CliUsageError(COMMAND_USAGE_TEXT)
+
+    feed_url = parsed_args.feed_url.strip()
+    logger.info("从 RSS 获取播客节目列表：feed=%s", feed_url)
+    feed = fetch_rss_feed(feed_url)
+    episodes = feed.episodes
+    if parsed_args.max_episodes is not None:
+        episodes = episodes[: parsed_args.max_episodes]
+    work_items = [
+        EpisodeWorkItem(
+            episode_url=build_episode_url(episode.episode_id),
+            eid=episode.episode_id,
+            title=episode.title,
+            pub_date=episode.published_at,
+            audio_url=episode.audio_url,
+        )
+        for episode in episodes
+    ]
+    logger.info(
+        "RSS 节目列表读取完成：podcast=%s episodes=%d", feed.title, len(work_items)
+    )
+
+    if parsed_args.source == AUDIO_SOURCE:
+        return _run_feed_audio_mode(
+            feed,
+            work_items,
+            transcribe_only=parsed_args.transcribe_only,
+            processing_mode=parsed_args.audio_processing_mode,
+            resume=parsed_args.resume,
+        )
+    return _run_feed_page_mode(feed, work_items)
 
 
-def _build_command_parser() -> argparse.ArgumentParser:
+def _build_feed_parser() -> argparse.ArgumentParser:
     parser = _CliArgumentParser(add_help=True, prog=PROGRAM_NAME)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    send_code_parser = subparsers.add_parser(SEND_CODE_COMMAND)
-    send_code_parser.add_argument("--mobile", required=True)
-    send_code_parser.add_argument("--area-code", default=DEFAULT_AREA_CODE)
-
-    login_parser = subparsers.add_parser(LOGIN_COMMAND)
-    login_parser.add_argument("--mobile", required=True)
-    login_parser.add_argument("--code", required=True)
-    login_parser.add_argument("--area-code", default=DEFAULT_AREA_CODE)
-
-    pid_parser = subparsers.add_parser(PID_COMMAND)
-    pid_parser.add_argument("--pid", required=True)
-    pid_parser.add_argument("--all", action="store_true", dest="fetch_all")
-    pid_parser.add_argument("--max-episodes", type=_parse_positive_int)
-    pid_parser.add_argument(
+    parser.add_argument("--feed-url", required=True)
+    parser.add_argument("--max-episodes", type=_parse_positive_int)
+    parser.add_argument(
         "--source",
-        choices=SUPPORTED_PID_SOURCES,
+        choices=SUPPORTED_FEED_SOURCES,
         default=PAGE_SOURCE,
     )
-    pid_parser.add_argument("--transcribe-only", action="store_true")
-    pid_parser.add_argument(
+    parser.add_argument("--transcribe-only", action="store_true")
+    parser.add_argument(
         "--audio-processing-mode",
         choices=SUPPORTED_AUDIO_PROCESSING_MODES,
         default=DEFAULT_AUDIO_PROCESSING_MODE,
     )
-    pid_parser.add_argument(
-        "--strict-checkpoint-validation",
-        action="store_true",
-    )
+    parser.add_argument("--resume", action="store_true")
     return parser
 
 
@@ -193,120 +180,48 @@ def _parse_positive_int(value: str) -> int:
     return parsed_value
 
 
-def _run_send_code_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
-    xyz_client.send_code(
-        mobile_phone_number=parsed_args.mobile,
-        area_code=parsed_args.area_code,
-    )
-    _print_xyz_success_payload(
-        mobile_phone_number=parsed_args.mobile,
-        area_code=parsed_args.area_code,
-    )
-    return 0
-
-
-def _run_login_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
-    login_result = xyz_client.login(
-        mobile_phone_number=parsed_args.mobile,
-        verify_code=parsed_args.code,
-        area_code=parsed_args.area_code,
-    )
-    auth_session = build_auth_session(
-        mobile_phone_number=parsed_args.mobile,
-        area_code=parsed_args.area_code,
-        uid=login_result.uid,
-        access_token=login_result.access_token,
-        refresh_token=login_result.refresh_token,
-    )
-    save_auth_session(auth_session)
-    _print_xyz_success_payload(
-        mobile_phone_number=parsed_args.mobile,
-        area_code=parsed_args.area_code,
-        uid=login_result.uid,
-    )
-    return 0
-
-
-def _run_pid_mode(parsed_args: argparse.Namespace, xyz_client: XyzClient) -> int:
-    if parsed_args.transcribe_only and parsed_args.source != AUDIO_SOURCE:
-        raise CliUsageError(TRANSCRIBE_ONLY_SOURCE_ERROR)
-    auth_session = load_auth_session()
-    logger.info("开始抓取播客节目列表，pid=%s", parsed_args.pid)
-    episodes = list_podcast_episodes(
-        xyz_client=xyz_client,
-        auth_session=auth_session,
-        pid=parsed_args.pid,
-        fetch_all=parsed_args.fetch_all,
-        max_episodes=parsed_args.max_episodes,
-    )
-    logger.info("抓取到 %d 个节目", len(episodes))
-    if parsed_args.max_episodes is not None:
-        logger.info("本次处理 %d 个节目", len(episodes))
-    work_items = [
-        EpisodeWorkItem(
-            episode_url=build_episode_url(episode_summary.eid),
-            eid=episode_summary.eid,
-            title=episode_summary.title,
-            pub_date=episode_summary.pub_date,
-        )
-        for episode_summary in episodes
-    ]
-    if parsed_args.source == AUDIO_SOURCE:
-        return _run_pid_audio_mode(
-            parsed_args.pid,
-            work_items,
-            transcribe_only=parsed_args.transcribe_only,
-            processing_mode=parsed_args.audio_processing_mode,
-            strict_checkpoint_validation=parsed_args.strict_checkpoint_validation,
-        )
-    return _run_pid_page_mode(parsed_args.pid, work_items)
-
-
-def _run_pid_page_mode(pid: str, work_items: Sequence[EpisodeWorkItem]) -> int:
+def _run_feed_page_mode(feed: RssFeed, work_items: Sequence[EpisodeWorkItem]) -> int:
     extraction_runtime = load_page_extraction_runtime_from_env()
-    pipeline_rate_config = load_pipeline_rate_config_from_env()
-    pipeline_result = run_pid_episode_pipeline(
+    pipeline_result = run_batch_episode_pipeline(
         work_items=work_items,
         runtime=extraction_runtime,
         checkpoint_store=LlmCheckpointStore(),
-        rate_config=pipeline_rate_config,
+        rate_config=load_pipeline_rate_config_from_env(),
     )
-    report_data = PidReportData(
-        pid=pid,
-        model=extraction_runtime.model,
-        base_url=extraction_runtime.base_url,
-        total=len(work_items),
-        success=pipeline_result.success_count,
-        failed=pipeline_result.fail_count,
-        episodes=pipeline_result.episode_results,
+    output_path, summary_path = save_feed_reports(
+        FeedReportData(
+            feed_id=feed.feed_id,
+            model=extraction_runtime.model,
+            base_url=extraction_runtime.base_url,
+            total=len(work_items),
+            success=pipeline_result.success_count,
+            failed=pipeline_result.fail_count,
+            episodes=pipeline_result.episode_results,
+        )
     )
-
-    output_path, summary_path = save_pid_reports(report_data)
     logger.info("结果已保存到 %s", output_path)
     logger.info("公司汇总已保存到 %s", summary_path)
     return 1 if pipeline_result.fail_count > 0 else 0
 
 
-def _run_pid_audio_mode(
-    pid: str,
+def _run_feed_audio_mode(
+    feed: RssFeed,
     work_items: Sequence[EpisodeWorkItem],
     *,
     transcribe_only: bool,
     processing_mode: AudioProcessingMode,
-    strict_checkpoint_validation: bool,
+    resume: bool,
 ) -> int:
-    transcription_runtime = _load_audio_transcription_runtime(
-        strict_checkpoint_validation=strict_checkpoint_validation,
-    )
+    transcription_runtime = _load_audio_transcription_runtime()
     try:
-        transcription_result = run_pid_audio_transcription(
-            pid=pid,
+        transcription_result = run_batch_audio_transcription(
             work_items=work_items,
             runtime=transcription_runtime,
             processing_mode=processing_mode,
+            resume=resume,
         )
-        report_path = save_pid_audio_transcription_report(
-            pid=pid,
+        report_path = save_batch_audio_transcription_report(
+            feed_id=feed.feed_id,
             runtime=transcription_runtime,
             result=transcription_result,
             output_dir=Path("output"),
@@ -318,13 +233,13 @@ def _run_pid_audio_mode(
         return 1 if transcription_result.fail_count > 0 else 0
 
     extraction_runtime = load_audio_extraction_runtime_from_env()
-    extraction_result = run_pid_audio_company_extraction(
+    extraction_result = run_batch_audio_company_extraction(
         transcription_result=transcription_result,
         runtime=extraction_runtime,
     )
-    output_path, summary_path = save_pid_reports(
-        PidReportData(
-            pid=pid,
+    output_path, summary_path = save_feed_reports(
+        FeedReportData(
+            feed_id=feed.feed_id,
             model=extraction_runtime.model,
             base_url=extraction_runtime.base_url,
             total=len(work_items),
@@ -338,15 +253,11 @@ def _run_pid_audio_mode(
     return 1 if extraction_result.fail_count > 0 else 0
 
 
-def _load_audio_transcription_runtime(
-    *,
-    strict_checkpoint_validation: bool = False,
-) -> PidAudioTranscriptionRuntime:
+def _load_audio_transcription_runtime() -> BatchAudioTranscriptionRuntime:
     transcription = load_audio_transcription_runtime_from_env()
-    return PidAudioTranscriptionRuntime(
+    return BatchAudioTranscriptionRuntime(
         transcription=transcription,
         vad_config=transcription.vad_config,
-        strict_checkpoint_validation=strict_checkpoint_validation,
     )
 
 
@@ -358,29 +269,14 @@ def _run_single_episode_mode(episode_url: str) -> int:
         runtime=extraction_runtime,
         checkpoint_store=LlmCheckpointStore(),
     )
-    _print_json(extraction_outcome.extraction_result.to_dict(), indent=2)
+    print(
+        json.dumps(
+            extraction_outcome.extraction_result.to_dict(),
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
-
-
-def _print_xyz_success_payload(
-    *,
-    mobile_phone_number: str,
-    area_code: str,
-    uid: str | None = None,
-) -> None:
-    payload = {
-        "status": SUCCESS_STATUS_TEXT,
-        "mobile_phone_number": mobile_phone_number,
-        "area_code": area_code,
-        "xyz_service_url": XYZ_SERVICE_URL_TEXT,
-    }
-    if uid is not None:
-        payload["uid"] = uid
-    _print_json(payload, indent=2)
-
-
-def _print_json(payload: object, *, indent: int | None = None) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=indent))
 
 
 if __name__ == "__main__":

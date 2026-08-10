@@ -35,7 +35,6 @@ SOURCE_IDENTITY_FIELDS: Final = (
     "source_audio_path",
     "episode_url",
 )
-RUNTIME_SIGNATURE_FIELD: Final = "runtime_signature"
 
 
 class TranscriptionInputError(ValueError):
@@ -55,14 +54,12 @@ def load_transcription_inputs(
     json_paths = _collect_json_paths(input_paths)
     titles: set[str] = set()
     source_identities: set[tuple[str, str]] = set()
-    runtime_signatures: set[str] = set()
     segments_by_index: dict[int, TranscribedSpeechSegment] = {}
     for path in json_paths:
         payload = _read_json_object(path)
         _collect_input_metadata(
             payload,
             source_identities=source_identities,
-            runtime_signatures=runtime_signatures,
         )
         title = payload.get("title")
         if isinstance(title, str) and title.strip():
@@ -70,10 +67,6 @@ def load_transcription_inputs(
         for segment in _parse_segments(payload, path):
             _add_segment(segments_by_index, segment)
     _validate_single_metadata_value(source_identities, field="音频来源")
-    _validate_single_metadata_value(
-        runtime_signatures,
-        field=RUNTIME_SIGNATURE_FIELD,
-    )
     if not segments_by_index:
         raise TranscriptionInputError(EMPTY_TRANSCRIPTION_ERROR)
     segments = tuple(
@@ -159,16 +152,12 @@ def _collect_input_metadata(
     payload: dict[str, object],
     *,
     source_identities: set[tuple[str, str]],
-    runtime_signatures: set[str],
 ) -> None:
     for field in SOURCE_IDENTITY_FIELDS:
         value = payload.get(field)
         if isinstance(value, str) and value.strip():
             source_identities.add((field, value.strip()))
             break
-    runtime_signature = payload.get(RUNTIME_SIGNATURE_FIELD)
-    if isinstance(runtime_signature, str) and runtime_signature.strip():
-        runtime_signatures.add(runtime_signature.strip())
 
 
 def _validate_single_metadata_value(

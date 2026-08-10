@@ -12,14 +12,14 @@ from podcast_job_finder.timestamps import build_utc_timestamp
 
 
 OUTPUT_DIR: Final = "output"
-OUTPUT_FILE_TEMPLATE: Final = "result_{pid}_{timestamp}.json"
-SUMMARY_FILE_TEMPLATE: Final = "summary_{pid}_{timestamp}.json"
+OUTPUT_FILE_TEMPLATE: Final = "result_{feed_id}_{timestamp}.json"
+SUMMARY_FILE_TEMPLATE: Final = "summary_{feed_id}_{timestamp}.json"
 OUTPUT_STATUS_SUCCESS: Final = "success"
 
 
 @dataclass(slots=True, frozen=True)
-class PidReportData:
-    pid: str
+class FeedReportData:
+    feed_id: str
     model: str
     base_url: str | None
     total: int
@@ -28,14 +28,14 @@ class PidReportData:
     episodes: list[dict]
 
 
-def save_pid_reports(report_data: PidReportData) -> tuple[str, str]:
+def save_feed_reports(report_data: FeedReportData) -> tuple[str, str]:
     return _save_result_file(report_data), _save_summary_file(report_data)
 
 
-def _save_summary_file(report_data: PidReportData) -> str:
+def _save_summary_file(report_data: FeedReportData) -> str:
     output_path, created_at = _build_output_file_details(
         SUMMARY_FILE_TEMPLATE,
-        report_data.pid,
+        report_data.feed_id,
     )
     companies = _aggregate_companies(report_data.episodes)
     report = _build_base_report(
@@ -86,10 +86,10 @@ def _aggregate_companies(episodes: list[dict]) -> list[dict]:
     )
 
 
-def _save_result_file(report_data: PidReportData) -> str:
+def _save_result_file(report_data: FeedReportData) -> str:
     output_path, created_at = _build_output_file_details(
         OUTPUT_FILE_TEMPLATE,
-        report_data.pid,
+        report_data.feed_id,
     )
     report = _build_base_report(
         report_data=report_data,
@@ -107,10 +107,11 @@ def _save_result_file(report_data: PidReportData) -> str:
     return output_path
 
 
-def _build_output_file_details(template: str, pid: str) -> tuple[str, str]:
+def _build_output_file_details(template: str, feed_id: str) -> tuple[str, str]:
     timestamp = build_utc_timestamp()
     output_path = str(
-        Path(OUTPUT_DIR) / template.format(pid=pid, timestamp=timestamp.file_label)
+        Path(OUTPUT_DIR)
+        / template.format(feed_id=feed_id, timestamp=timestamp.file_label)
     )
     Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
     return output_path, timestamp.text
@@ -118,14 +119,14 @@ def _build_output_file_details(template: str, pid: str) -> tuple[str, str]:
 
 def _build_base_report(
     *,
-    report_data: PidReportData,
+    report_data: FeedReportData,
     created_at: str,
     total_key: str,
     success_key: str,
     failed_key: str,
 ) -> dict[str, object]:
     return {
-        "pid": report_data.pid,
+        "feed_id": report_data.feed_id,
         "model": report_data.model,
         "base_url": report_data.base_url,
         "created_at": created_at,

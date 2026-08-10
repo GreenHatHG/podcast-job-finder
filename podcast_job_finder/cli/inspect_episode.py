@@ -3,8 +3,7 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from podcast_job_finder.xiaoyuzhou.episode_client import parse_episode_url
-from podcast_job_finder.xiaoyuzhou.episode_parser import EpisodeParseError
+from podcast_job_finder.episode import EpisodeParseError, parse_episode_url
 
 
 USAGE_TEXT: Final = "用法：podcast-inspect-episode <episode_url>"

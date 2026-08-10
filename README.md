@@ -1,15 +1,16 @@
 # Podcast Job Finder
 
-从小宇宙播客的标题、正文和评论中提取明确出现的招聘主体，并保留对应原文证据。项目支持处理单个节目，也支持按播客 `pid` 批量抓取节目、调用兼容 OpenAI 接口的大语言模型，并生成逐集结果与公司汇总。
+从小宇宙播客的标题、正文和评论中提取明确出现的招聘主体，并保留对应原文证据。项目也可以通过公开 RSS 获取完整节目清单并批量下载音频。
 
 ## 主要功能
 
 - 解析小宇宙单集页面，读取标题、正文、评论和音频地址。
 - 调用 `responses` 或 `chat.completions` 接口提取公司名称与原文证据。
 - 按公司黑名单过滤结果，并对同一集中的公司名称去重。
-- 按播客 `pid` 批量处理节目，支持分页抓取、请求限速和失败重试。
-- 断点续跑：配置和提示词未变化时可复用成功结果，失败任务或者中断任务重新执行时可接着之前的进度跑。
-- 下载单集音频，并通过 TEN VAD 检测、切分和导出语音片段。
+- 按公开 RSS 获取全量节目，并批量转写或提取公司。
+- 本地音频转写默认从头处理；需要复用检查点时显式添加 `--resume`。
+- 对音频通过 TEN VAD 检测、切分和导出语音片段。
+- 从公开 RSS 获取完整节目清单，并免登录批量下载原始音频。
 
 ## 运行要求
 
@@ -17,7 +18,6 @@
 - [uv](https://docs.astral.sh/uv/)
 - 可用的 OpenAI 或 OpenAI 兼容接口
 - `ffmpeg`，仅在使用语音片段切分功能时需要
-- 可选：本地 [`xyz`](https://github.com/ultrazg/xyz/releases) 服务，批量处理播客和小宇宙登录时需要；程序固定访问 `http://localhost:23020`
 
 ## 安装
 
@@ -26,18 +26,6 @@ git clone https://github.com/GreenHatHG/podcast-job-finder.git
 cd podcast-job-finder
 uv sync
 ```
-
-需要批量处理播客时，从 [`xyz` Releases](https://github.com/ultrazg/xyz/releases) 下载适合当前操作系统的版本，并按照对应版本的发布说明完成安装。
-
-### 启动 `xyz` 的时机
-
-以下命令会调用 `xyz`，执行前需要启动服务，并确保它正在监听 `http://localhost:23020`：
-
-- `send-code`：发送小宇宙登录验证码。
-- `login`：使用验证码登录并保存凭据。
-- `pid`：获取播客节目列表、翻页和刷新登录令牌。
-
-处理单集 URL、查看单集页面内容、下载音频以及切分本地语音片段时无需启动 `xyz`。`send-code` 和 `login` 完成后可以关闭服务；运行 `pid` 批量任务前需要重新启动，并保持服务运行到命令结束。
 
 ## 配置大语言模型
 
@@ -96,7 +84,7 @@ set +a
 - `EPISODE_PAGE_FETCH_RATE_PER_MINUTE`：批量页面公司提取中，小宇宙单集页面 HTTP 请求的每分钟上限。
 - `LOG_LEVEL`：日志级别，默认为 `INFO`。
 
-`<场景>` 支持 `PAGE_COMPANY_EXTRACTION`、`AUDIO_TRANSCRIPTION`、`TRANSCRIPTION_FORMATTING` 和 `AUDIO_COMPANY_EXTRACTION`。`pid --source page` 只需要页面公司提取配置；`pid --source audio` 需要音频转写、转写文本整理和音频公司提取配置；`podcast-transcribe` 需要音频转写和转写文本整理配置；`podcast-merge-transcriptions` 只需要转写文本整理配置。地址、密钥和模型相同时，可以在 `.env` 中引用前面定义的变量。
+`<场景>` 支持 `PAGE_COMPANY_EXTRACTION`、`AUDIO_TRANSCRIPTION`、`TRANSCRIPTION_FORMATTING` 和 `AUDIO_COMPANY_EXTRACTION`。`podcast-find-jobs --feed-url ... --source page` 需要页面公司提取配置；`podcast-find-jobs --feed-url ... --source audio` 需要音频转写配置，未使用 `--transcribe-only` 时还需要音频公司提取配置；`podcast-transcribe` 需要音频转写和转写文本整理配置；`podcast-merge-transcriptions` 只需要转写文本整理配置。地址、密钥和模型相同时，可以在 `.env` 中引用前面定义的变量。
 
 ## 使用方法
 
@@ -121,7 +109,7 @@ uv run podcast-find-jobs \
 }
 ```
 
-单集处理无需登录，也无需启动本地 `xyz` 服务。生成的提示词与大语言模型调用结果会保存到 `output/checkpoints/episodes/<eid>/`，后续使用相同模型配置、黑名单和提示词时会直接复用成功结果。
+单集处理无需登录。生成的提示词与大语言模型调用结果会保存到 `output/checkpoints/episodes/<eid>/`，后续使用相同模型配置、黑名单和提示词时会直接复用成功结果。
 
 ### 查看单集页面内容
 
@@ -132,48 +120,46 @@ uv run podcast-inspect-episode \
   "https://www.xiaoyuzhoufm.com/episode/<eid>"
 ```
 
-### 批量处理一个播客
+### 通过 RSS 批量处理一个播客
 
-批量模式需要本地 `xyz` 服务运行在 `http://localhost:23020`。先获取验证码并登录：
-
-```bash
-uv run podcast-find-jobs send-code \
-  --mobile <手机号> \
-  --area-code +86
-
-uv run podcast-find-jobs login \
-  --mobile <手机号> \
-  --code <验证码> \
-  --area-code +86
-```
-
-登录成功后，凭据保存在项目根目录的 `.xiaoyuzhou_auth.json`，文件权限为仅当前用户可读写。处理播客最新一页的节目：
+批量处理播客不需要登录。RSS 本身始终返回全量节目：
 
 ```bash
-uv run podcast-find-jobs pid --pid <pid>
+uv run podcast-find-jobs \
+  --feed-url <RSS地址> \
+  --source audio \
+  --transcribe-only \
+  --resume
 ```
 
-加入 `--all` 可抓取全部分页：
+RSS 的节目 ID 和音频地址会直接用于检查 `output/audio/<eid>/`，已有音频和有效转写缓存不会重新下载或转写。批次报告使用由 RSS 地址 SHA-256 哈希前 16 位生成的稳定 `feed_id` 命名，不再需要手工指定播客 ID。
+
+### 从 RSS 下载完整播客
+
+公开 RSS 不需要小宇宙账号。下面的命令会先保存每档播客的完整节目清单，再按清单顺序下载全部音频：
 
 ```bash
-uv run podcast-find-jobs pid --pid <pid> --all
+uv run podcast-download-rss \
+  https://feed.xyzfm.space/j8yp8gxkmgqr \
+  https://feed.xyzfm.space/jtvfkcxqmnkg \
+  https://feed.xyzfm.space/ypn9dydpbxpc \
+  https://feed.xyzfm.space/6hpdgggtxpxb \
+  https://proxy.wavpub.com/35huan.xml
 ```
 
-批量处理完成后会在 `output/` 生成两个文件：
+每档播客的清单会保存在 `output/podcasts/<播客名>-<RSS地址摘要>/manifest.json`，其中包含节目标题、发布日期、原始音频 URL、声明的文件大小、本地路径和下载状态。音频默认保存在 `output/audio/<节目ID>/source.<扩展名>`，节目 ID 直接使用 RSS 的 `guid`；小宇宙 RSS 中该值与原有 `eid` 相同，因此会直接复用已有音频和转写目录。
 
-- `result_<pid>_<UTC时间>.json`：逐集状态、公司、证据和错误信息。
-- `summary_<pid>_<UTC时间>.json`：去重后的公司汇总、出现次数及关联节目。
-
-只要有一集处理失败，批量命令就会返回非零退出码；成功节目及已经写入的检查点仍会保留，重新执行命令可继续处理。
-
-### 下载单集音频
+已有的非空音频文件默认跳过，因此任务中断后可以直接重新执行同一命令。只生成完整清单并在下载前检查预计空间时使用：
 
 ```bash
-uv run podcast-download-audio \
-  "https://www.xiaoyuzhoufm.com/episode/<eid>"
+uv run podcast-download-rss \
+  https://feed.xyzfm.space/j8yp8gxkmgqr \
+  --list-only
 ```
 
-音频默认保存到 `output/audio/<eid>/source.<扩展名>`。已有文件默认跳过，使用 `--overwrite` 覆盖，使用 `--output-dir <目录>` 修改输出目录。
+需要重新下载已有文件时添加 `--overwrite`。`--output-dir <目录>` 修改清单目录，`--audio-output-dir <目录>` 修改音频目录。
+
+转写本地音频时，使用 `uv run podcast-transcribe <音频路径> --resume` 复用有效的片段检查点。
 
 ### 检测并导出语音片段
 
@@ -197,7 +183,7 @@ for segment in segments:
 
 ## 输出与缓存
 
-运行产生的登录凭据、音频、报告和检查点均已加入 `.gitignore`。主要目录结构如下：
+运行产生的音频、报告和检查点均已加入 `.gitignore`。主要目录结构如下：
 
 ```text
 output/
@@ -211,8 +197,11 @@ output/
 │           ├── llm_prompt.txt
 │           ├── llm_response.txt
 │           └── llm_state.json
-├── result_<pid>_<UTC时间>.json
-└── summary_<pid>_<UTC时间>.json
+├── result_<feed_id>_<UTC时间>.json
+├── summary_<feed_id>_<UTC时间>.json
+└── podcasts/
+    └── <播客名>-<RSS地址摘要>/
+        └── manifest.json
 ```
 
 检查点签名包含模型、接口地址、接口类型、公司黑名单和提示词模板。任一内容变化后，对应节目会重新抓取并调用大语言模型。
@@ -223,10 +212,11 @@ output/
 podcast_job_finder/
 ├── audio/                  # 音频规范化、VAD 检测、片段导出与转录
 ├── cli/                    # 命令行入口
-├── companies/              # 公司提取、单集任务、批量处理与报告
+├── companies/              # 公司提取和处理流程
 ├── http/                   # 共享 HTTP 配置
 ├── llm/                    # OpenAI 兼容客户端、配置与重试
-└── xiaoyuzhou/             # 页面解析、音频下载与 xyz 服务集成
+├── rss/                    # RSS 清单解析与批量音频下载
+└── episode/                # 页面解析与单集 URL/页面工具
 ```
 
 ## 开发检查

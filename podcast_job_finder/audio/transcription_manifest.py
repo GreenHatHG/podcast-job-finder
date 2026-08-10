@@ -141,7 +141,7 @@ def parse_transcribed_segment(
         raise _build_invalid_segment_error(path, index)
     if start_ms < 0 or end_ms <= start_ms:
         raise _build_invalid_segment_error(path, index)
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str):
         raise _build_invalid_segment_error(path, index)
     try:
         return TranscribedSpeechSegment(

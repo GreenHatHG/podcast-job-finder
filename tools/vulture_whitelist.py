@@ -2,7 +2,7 @@
 
 # pylint: disable=pointless-statement
 
-from podcast_job_finder.xiaoyuzhou.episode_parser import _HTMLTextExtractor
+from podcast_job_finder.episode.parser import _HTMLTextExtractor
 
 
 class _DynamicAttributeReferences:

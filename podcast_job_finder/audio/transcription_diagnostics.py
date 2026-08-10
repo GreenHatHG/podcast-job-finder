@@ -181,12 +181,18 @@ def _parse_assessment(value: object) -> TruncationAssessment:
     long_gap = value.get("has_long_uncovered_speech")
     if not isinstance(coverage, (int, float)) or isinstance(coverage, bool):
         raise ValueError("speech_coverage_ratio 必须是数字。")
-    if not isinstance(coverage_status, str):
-        raise ValueError("speech_coverage_status 必须是字符串。")
-    try:
-        parsed_coverage_status = SpeechCoverageStatus(coverage_status)
-    except ValueError as error:
-        raise ValueError("speech_coverage_status 无效。") from error
+    if coverage_status is None:
+        parsed_coverage_status = _infer_legacy_coverage_status(
+            coverage=float(coverage),
+            has_low_coverage=value.get("has_low_speech_coverage"),
+        )
+    else:
+        if not isinstance(coverage_status, str):
+            raise ValueError("speech_coverage_status 必须是字符串。")
+        try:
+            parsed_coverage_status = SpeechCoverageStatus(coverage_status)
+        except ValueError as error:
+            raise ValueError("speech_coverage_status 无效。") from error
     if not isinstance(long_gap, bool):
         raise ValueError("has_long_uncovered_speech 必须是布尔值。")
     return TruncationAssessment(
@@ -207,6 +213,18 @@ def _parse_assessment(value: object) -> TruncationAssessment:
         speech_coverage_status=parsed_coverage_status,
         has_long_uncovered_speech=long_gap,
     )
+
+
+def _infer_legacy_coverage_status(
+    *,
+    coverage: float,
+    has_low_coverage: object,
+) -> SpeechCoverageStatus:
+    if coverage <= 0:
+        return SpeechCoverageStatus.NO_TRANSCRIPT
+    if has_low_coverage is True:
+        return SpeechCoverageStatus.LOW_COVERAGE
+    return SpeechCoverageStatus.SUFFICIENT_COVERAGE
 
 
 def _parse_probe(value: object) -> TruncationProbeDiagnostics | None:

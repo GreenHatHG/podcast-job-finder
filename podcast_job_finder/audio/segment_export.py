@@ -318,26 +318,6 @@ def get_segment_audio_format(path: Path) -> SegmentAudioFormat:
     return parse_segment_audio_format(path.suffix.removeprefix("."))
 
 
-def build_segment_audio_signature(
-    audio_format: SegmentAudioFormat,
-) -> dict[str, object]:
-    signature: dict[str, object] = {
-        "format": audio_format,
-        "sample_rate": VAD_SAMPLE_RATE,
-        "channels": PCM_CHANNELS,
-    }
-    if audio_format == MP3_SEGMENT_AUDIO_FORMAT:
-        signature.update(
-            {
-                "codec": SEGMENT_AUDIO_CODEC,
-                "bit_rate": SEGMENT_AUDIO_BIT_RATE,
-            }
-        )
-    else:
-        signature["sample_width_bytes"] = PCM_SAMPLE_WIDTH_BYTES
-    return signature
-
-
 def _format_file_timestamp(timestamp_ms: int) -> str:
     """把毫秒转换为适合放进文件名的“时-分-秒.毫秒”格式。"""
     total_seconds, milliseconds = divmod(timestamp_ms, MILLISECONDS_PER_SECOND)

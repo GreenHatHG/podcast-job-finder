@@ -4,9 +4,9 @@ import logging
 from pathlib import Path
 from typing import Final
 
-from podcast_job_finder.audio.pid_transcription import (
+from podcast_job_finder.audio.batch_transcription import (
     RESULT_STATUS_SUCCESS,
-    PidAudioTranscriptionResult,
+    BatchAudioTranscriptionResult,
 )
 from podcast_job_finder.audio.transcription_manifest import (
     TranscriptionManifestError,
@@ -18,7 +18,7 @@ from podcast_job_finder.companies.episode_runner import (
     EpisodeWorkItem,
 )
 from podcast_job_finder.companies.models import CompanyExtractionError
-from podcast_job_finder.companies.pipeline import PidEpisodePipelineResult
+from podcast_job_finder.companies.pipeline import BatchEpisodePipelineResult
 from podcast_job_finder.companies.transcript_extraction import (
     extract_companies_from_transcript,
 )
@@ -45,11 +45,11 @@ EXPECTED_EXTRACTION_ERRORS: Final = (
 logger = logging.getLogger(__name__)
 
 
-def run_pid_audio_company_extraction(
+def run_batch_audio_company_extraction(
     *,
-    transcription_result: PidAudioTranscriptionResult,
+    transcription_result: BatchAudioTranscriptionResult,
     runtime: EpisodeExtractionRuntime,
-) -> PidEpisodePipelineResult:
+) -> BatchEpisodePipelineResult:
     episode_results = [
         _extract_episode_record(record, runtime=runtime)
         if record.get("status") == RESULT_STATUS_SUCCESS
@@ -59,7 +59,7 @@ def run_pid_audio_company_extraction(
     success_count = sum(
         1 for result in episode_results if result.get("status") == RESULT_STATUS_SUCCESS
     )
-    return PidEpisodePipelineResult(
+    return BatchEpisodePipelineResult(
         episode_results=episode_results,
         success_count=success_count,
         fail_count=len(episode_results) - success_count,

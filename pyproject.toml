@@ -13,20 +13,19 @@ dependencies = [
 ]
 
 [project.scripts]
-# 下载小宇宙单集 URL 对应的原始音频，支持指定目录、跳过已有文件或强制覆盖。
-# 输出范围为下载结果和原始音频文件；语音切分、模型转写和公司提取由后续命令负责。
-podcast-download-audio = "podcast_job_finder.cli.download_audio:main"
-# 单集 URL 基于页面提取公司；pid 批量支持页面/音频来源、断点续跑和结果汇总。
-# send-code、login、pid 依赖本地 xyz；pid 音频来源完成下载、切分、逐片段转写和公司提取。
+# 从一个或多个公开 RSS 获取完整节目清单，并按节目下载全部原始音频。
+# 无需登录；默认跳过已经完整下载的文件，可重复执行以继续批量任务。
+podcast-download-rss = "podcast_job_finder.cli.download_rss:main"
+# 单集页面提取公司；批量命令通过公开 RSS 获取节目列表。
 podcast-find-jobs = "podcast_job_finder.cli.companies:main"
-# 抓取并输出小宇宙单集的标题、正文、评论和音频地址，便于检查页面解析结果。
+# 抓取并输出单集的标题、正文、评论和音频地址，便于检查页面解析结果。
 # 输出范围为页面解析文本；音频下载和模型处理由对应命令负责。
 podcast-inspect-episode = "podcast_job_finder.cli.inspect_episode:main"
 # 将本地音频规范化后使用 TEN VAD 检测人声，并导出多个 WAV 语音片段及片段清单。
 # 输出范围为 WAV 片段与片段清单；转写文本由 podcast-transcribe 生成。
 podcast-split-audio = "podcast_job_finder.cli.split_audio:main"
 # 切分本地音频并逐片段调用大语言模型转写，生成同名 JSON 检查点和完整 JSON 结果。
-# 支持缓存复用、限制片段数量和强制重写；模型接口范围为 chat.completions。
+# 支持显式缓存恢复和限制片段数量；模型接口范围为 chat.completions。
 podcast-transcribe = "podcast_job_finder.cli.transcribe:main"
 # 将已有的片段 JSON 或完整转写 JSON 交给转写模型整理，生成便于阅读的 Markdown 文章。
 # 该命令不读取音频，使用独立的 LLM_TRANSCRIPTION_FORMATTING 模型配置。

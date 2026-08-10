@@ -17,6 +17,12 @@ class AudioTranscriptionError(RuntimeError):
     """音频片段无法完成转写时抛出的错误。"""
 
 
+PREVIOUS_SEGMENT_ORDER_ERROR = (
+    "上一音频片段编号不连续：expected_index={expected_index} actual_index={actual_index} "
+    "current_index={current_index}"
+)
+
+
 @dataclass(slots=True, frozen=True)
 class TimedTranscriptionText:
     text: str
@@ -141,6 +147,7 @@ def transcribe_speech_segment(
     transcriber: AudioTranscriberProtocol,
     previous_segment: TranscribedSpeechSegment | None = None,
 ) -> TranscribedSpeechSegment:
+    validate_previous_segment_order(segment, previous_segment)
     logger.info(
         "识别音频片段：index=%d start_ms=%d end_ms=%d",
         segment.index,
@@ -152,6 +159,23 @@ def transcribe_speech_segment(
         previous_segment=previous_segment,
     )
     return build_transcribed_speech_segment(segment, output)
+
+
+def validate_previous_segment_order(
+    segment: ExportedSpeechSegment,
+    previous_segment: TranscribedSpeechSegment | None,
+) -> None:
+    if previous_segment is None:
+        return
+    expected_index = segment.index - 1
+    if previous_segment.index != expected_index:
+        raise ValueError(
+            PREVIOUS_SEGMENT_ORDER_ERROR.format(
+                expected_index=expected_index,
+                actual_index=previous_segment.index,
+                current_index=segment.index,
+            )
+        )
 
 
 def build_transcribed_speech_segment(
@@ -227,6 +251,8 @@ def _parse_timestamp_range(
         raise ValueError(f"{field_name}[{index}] 内容无效。")
     if not isinstance(end_ms, int) or isinstance(end_ms, bool):
         raise ValueError(f"{field_name}[{index}] 内容无效。")
-    if not 0 <= start_ms < end_ms:
+    # 旧版转写结果偶尔会把最后一个字保存为零时长（start_ms == end_ms）。
+    # 保留这条时间记录，才能复用已有清单；负数或倒序仍然视为无效。
+    if not 0 <= start_ms <= end_ms:
         raise ValueError(f"{field_name}[{index}] 内容无效。")
     return start_ms, end_ms

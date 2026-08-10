@@ -6,9 +6,9 @@ from urllib.parse import urlparse
 
 import requests
 
+from podcast_job_finder.episode.models import EpisodeInfo
+from podcast_job_finder.episode.parser import parse_episode_html
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
-from podcast_job_finder.xiaoyuzhou.episode_parser import parse_episode_html
-from podcast_job_finder.xiaoyuzhou.models import EpisodeInfo
 
 
 EPISODE_ID_PATTERN = re.compile(r"^[0-9A-Za-z]{24}$")

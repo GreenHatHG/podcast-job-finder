@@ -8,4 +8,4 @@ result_*.json
 summary*.json
 output
 models/firered/
-xyz-*
+*.log

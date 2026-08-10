@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Final, Protocol
 
 from podcast_job_finder.llm.rate_limit import PerMinuteRateLimiter
-from podcast_job_finder.xiaoyuzhou.episode_client import parse_episode_url
-from podcast_job_finder.xiaoyuzhou.models import EpisodeInfo
+from podcast_job_finder.episode import EpisodeInfo, parse_episode_url
 
 
 class EpisodePageLoaderProtocol(Protocol):

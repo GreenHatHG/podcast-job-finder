@@ -17,9 +17,8 @@ from podcast_job_finder.audio.vad import DEFAULT_VAD_THRESHOLD
 DOUBAO_MODEL_NAME: Final = "doubao-ime-asr"
 DOUBAO_PROTOCOL_VERSION: Final = "apk-1.3.17-twopass"
 DOUBAO_MAX_ATTEMPTS: Final = 2
-DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS: Final = 12
-DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS: Final = 2.0
-DOUBAO_CACHE_SIGNATURE_MAX_IN_FLIGHT_REQUESTS: Final = 1
+DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS: Final = 30
+DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS: Final = 1.0
 DOUBAO_MAX_IN_FLIGHT_REQUESTS_METADATA_KEY: Final = "max_in_flight_requests"
 DOUBAO_REQUEST_INTERVAL_METADATA_KEY: Final = "request_interval_seconds"
 
@@ -56,20 +55,4 @@ class DoubaoTranscriberConfig:
             "low_character_confidence_threshold": (LOW_CHARACTER_CONFIDENCE_THRESHOLD),
             DOUBAO_MAX_IN_FLIGHT_REQUESTS_METADATA_KEY: (self.max_in_flight_requests),
             DOUBAO_REQUEST_INTERVAL_METADATA_KEY: self.request_interval_seconds,
-        }
-
-    def signature_payload(self) -> dict[str, object]:
-        signature_metadata = self.metadata()
-        signature_metadata.pop(DOUBAO_MAX_IN_FLIGHT_REQUESTS_METADATA_KEY, None)
-        signature_metadata.pop(DOUBAO_REQUEST_INTERVAL_METADATA_KEY, None)
-        return {
-            **signature_metadata,
-            # 在途请求上限和请求间隔不改变转写结果，继续复用已有检查点。
-            DOUBAO_MAX_IN_FLIGHT_REQUESTS_METADATA_KEY: (
-                DOUBAO_CACHE_SIGNATURE_MAX_IN_FLIGHT_REQUESTS
-            ),
-            "silence_padding_ms": self.silence_padding_ms,
-            "vad_threshold": self.vad_threshold,
-            "max_attempts": DOUBAO_MAX_ATTEMPTS,
-            "alignment": self.alignment_config.signature_payload(),
         }

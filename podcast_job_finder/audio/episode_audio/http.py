@@ -5,10 +5,8 @@ from typing import BinaryIO, Final
 
 import requests
 
+from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
-from podcast_job_finder.xiaoyuzhou.episode_audio.errors import (
-    EpisodeAudioDownloadError,
-)
 
 
 DOWNLOAD_CHUNK_SIZE_BYTES: Final = 1024 * 1024
