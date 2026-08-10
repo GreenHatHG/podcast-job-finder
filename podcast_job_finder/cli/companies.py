@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.audio.batch_transcription import (
+    RESULT_STATUS_SUCCESS,
     BatchAudioTranscriptionError,
+    BatchAudioTranscriptionResult,
     BatchAudioTranscriptionRuntime,
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
@@ -18,6 +20,8 @@ from podcast_job_finder.audio.batch_transcription_schedule import (
     SUPPORTED_AUDIO_PROCESSING_MODES,
     AudioProcessingMode,
 )
+from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
+from podcast_job_finder.audio.transcription_manifest import TRANSCRIPTION_FILE_NAME
 from podcast_job_finder.audio.transcription_runtime import (
     AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
@@ -58,13 +62,18 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
         (
             f"      {PROGRAM_NAME} --feed-url <RSS地址> "
             "[--max-episodes <正整数>] [--source page|audio] "
-            "[--transcribe-only] [--audio-processing-mode sequential|download-first] "
-            "[--resume]"
+            "[--transcribe-only|--extract-only] "
+            "[--audio-processing-mode sequential|download-first] [--resume]"
         ),
     ]
 )
 TRANSCRIBE_ONLY_SOURCE_ERROR: Final = (
     "--transcribe-only 只能与 --source audio 一起使用。"
+)
+EXTRACT_ONLY_SOURCE_ERROR: Final = "--extract-only 只能与 --source audio 一起使用。"
+EXCLUSIVE_AUDIO_MODE_ERROR: Final = "--transcribe-only 和 --extract-only 不能同时使用。"
+EXTRACT_ONLY_RESUME_ERROR: Final = (
+    "--resume 不能与 --extract-only 同时使用；公司提取会自动复用成功检查点。"
 )
 RESUME_SOURCE_ERROR: Final = "--resume 只能与 --source audio 一起使用。"
 
@@ -113,10 +122,16 @@ def main() -> int:
 
 def _run_feed_command(raw_args: Sequence[str]) -> int:
     parsed_args = _build_feed_parser().parse_args(list(raw_args))
+    if parsed_args.transcribe_only and parsed_args.extract_only:
+        raise CliUsageError(EXCLUSIVE_AUDIO_MODE_ERROR)
     if parsed_args.transcribe_only and parsed_args.source != AUDIO_SOURCE:
         raise CliUsageError(TRANSCRIBE_ONLY_SOURCE_ERROR)
+    if parsed_args.extract_only and parsed_args.source != AUDIO_SOURCE:
+        raise CliUsageError(EXTRACT_ONLY_SOURCE_ERROR)
     if parsed_args.resume and parsed_args.source != AUDIO_SOURCE:
         raise CliUsageError(RESUME_SOURCE_ERROR)
+    if parsed_args.extract_only and parsed_args.resume:
+        raise CliUsageError(EXTRACT_ONLY_RESUME_ERROR)
     if not parsed_args.feed_url:
         raise CliUsageError(COMMAND_USAGE_TEXT)
 
@@ -141,6 +156,8 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
     )
 
     if parsed_args.source == AUDIO_SOURCE:
+        if parsed_args.extract_only:
+            return _run_feed_audio_extraction_only(feed, work_items)
         return _run_feed_audio_mode(
             feed,
             work_items,
@@ -161,6 +178,7 @@ def _build_feed_parser() -> argparse.ArgumentParser:
         default=PAGE_SOURCE,
     )
     parser.add_argument("--transcribe-only", action="store_true")
+    parser.add_argument("--extract-only", action="store_true")
     parser.add_argument(
         "--audio-processing-mode",
         choices=SUPPORTED_AUDIO_PROCESSING_MODES,
@@ -232,6 +250,64 @@ def _run_feed_audio_mode(
     if transcribe_only:
         return 1 if transcription_result.fail_count > 0 else 0
 
+    return _run_audio_company_extraction(feed, transcription_result)
+
+
+def _run_feed_audio_extraction_only(
+    feed: RssFeed,
+    work_items: Sequence[EpisodeWorkItem],
+) -> int:
+    transcription_result, skipped_count = _load_existing_transcription_result(
+        work_items
+    )
+    logger.info(
+        "已有音频转写扫描完成：可提取=%d 跳过=%d",
+        transcription_result.success_count,
+        skipped_count,
+    )
+    return _run_audio_company_extraction(feed, transcription_result)
+
+
+def _load_existing_transcription_result(
+    work_items: Sequence[EpisodeWorkItem],
+    *,
+    audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
+) -> tuple[BatchAudioTranscriptionResult, int]:
+    episode_results: list[dict[str, object]] = []
+    skipped_count = 0
+    for work_item in work_items:
+        eid = work_item.resolve_episode_id()
+        if eid is None:
+            skipped_count += 1
+            continue
+        transcription_path = audio_output_dir / eid / TRANSCRIPTION_FILE_NAME
+        if not transcription_path.exists():
+            skipped_count += 1
+            continue
+        record = work_item.to_result_metadata(eid=eid)
+        record.update(
+            {
+                "status": RESULT_STATUS_SUCCESS,
+                "cached": True,
+                "transcription_path": str(transcription_path),
+            }
+        )
+        episode_results.append(record)
+
+    return (
+        BatchAudioTranscriptionResult(
+            episode_results=episode_results,
+            success_count=len(episode_results),
+            fail_count=0,
+        ),
+        skipped_count,
+    )
+
+
+def _run_audio_company_extraction(
+    feed: RssFeed,
+    transcription_result: BatchAudioTranscriptionResult,
+) -> int:
     extraction_runtime = load_audio_extraction_runtime_from_env()
     extraction_result = run_batch_audio_company_extraction(
         transcription_result=transcription_result,
@@ -242,7 +318,7 @@ def _run_feed_audio_mode(
             feed_id=feed.feed_id,
             model=extraction_runtime.model,
             base_url=extraction_runtime.base_url,
-            total=len(work_items),
+            total=len(transcription_result.episode_results),
             success=extraction_result.success_count,
             failed=extraction_result.fail_count,
             episodes=extraction_result.episode_results,
