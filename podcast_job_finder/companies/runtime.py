@@ -31,16 +31,10 @@ def _load_extraction_runtime_from_env(env_prefix: str) -> EpisodeExtractionRunti
     llm_runtime = load_llm_runtime_from_env(env_prefix)
     company_blacklist = _load_company_blacklist()
     return EpisodeExtractionRuntime(
-        llm_client=llm_runtime.client,
-        retry_config=llm_runtime.retry_config,
+        llm=llm_runtime,
         company_blacklist=company_blacklist,
-        model=llm_runtime.model,
-        base_url=llm_runtime.base_url,
-        api_style=llm_runtime.api_style,
         runtime_signature=build_runtime_signature(
-            model=llm_runtime.model,
-            base_url=llm_runtime.base_url,
-            api_style=llm_runtime.api_style,
+            llm=llm_runtime,
             company_blacklist=company_blacklist,
         ),
     )

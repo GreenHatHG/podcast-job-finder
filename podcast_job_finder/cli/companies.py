@@ -208,8 +208,8 @@ def _run_feed_page_mode(feed: RssFeed, work_items: Sequence[EpisodeWorkItem]) ->
     output_path, summary_path = save_feed_reports(
         FeedReportData(
             feed_id=feed.feed_id,
-            model=extraction_runtime.model,
-            base_url=extraction_runtime.base_url,
+            model=extraction_runtime.llm.model,
+            base_url=extraction_runtime.llm.base_url,
             total=len(work_items),
             success=pipeline_result.success_count,
             failed=pipeline_result.fail_count,
@@ -315,8 +315,8 @@ def _run_audio_company_extraction(
     output_path, summary_path = save_feed_reports(
         FeedReportData(
             feed_id=feed.feed_id,
-            model=extraction_runtime.model,
-            base_url=extraction_runtime.base_url,
+            model=extraction_runtime.llm.model,
+            base_url=extraction_runtime.llm.base_url,
             total=len(transcription_result.episode_results),
             success=extraction_result.success_count,
             failed=extraction_result.fail_count,

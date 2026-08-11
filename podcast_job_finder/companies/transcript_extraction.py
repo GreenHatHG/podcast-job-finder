@@ -182,9 +182,9 @@ def _run_cached_extraction(
     context.checkpoint_store.save_prepared(payload)
     attempt = run_company_extraction_from_prompt(
         prompt,
-        runtime.llm_client,
+        runtime.llm.client,
         company_blacklist=company_blacklist,
-        retry_config=runtime.retry_config,
+        retry_config=runtime.llm.retry_config,
         result_validator=result_validator,
     )
     if attempt.error is not None:
@@ -247,9 +247,9 @@ def _build_prompt_runtime_signature(
 ) -> str:
     return build_runtime_signature_hash(
         {
-            "model": runtime.model,
-            "base_url": runtime.base_url,
-            "api_style": runtime.api_style,
+            "model": runtime.llm.model,
+            "base_url": runtime.llm.base_url,
+            "api_style": runtime.llm.api_style,
             "company_blacklist": sorted(
                 {
                     company_name.strip().casefold()

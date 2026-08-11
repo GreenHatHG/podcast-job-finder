@@ -4,7 +4,6 @@ import logging
 from dataclasses import dataclass, replace
 
 from podcast_job_finder.companies.extraction import (
-    LlmClientProtocol,
     build_company_extraction_input,
     build_company_extraction_prompt,
     get_company_extraction_prompt_template,
@@ -25,7 +24,7 @@ from podcast_job_finder.companies.checkpoint import (
     LlmCheckpointSavePayload,
     LlmCheckpointStore,
 )
-from podcast_job_finder.llm import LlmRetryConfig
+from podcast_job_finder.llm import LlmRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 
@@ -35,12 +34,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True, frozen=True)
 class EpisodeExtractionRuntime:
-    llm_client: LlmClientProtocol
-    retry_config: LlmRetryConfig
+    llm: LlmRuntime
     company_blacklist: tuple[str, ...]
-    model: str
-    base_url: str | None
-    api_style: str
     runtime_signature: str
 
 
@@ -94,9 +89,7 @@ class _EpisodeCheckpointContext:
 
 def build_runtime_signature(
     *,
-    model: str,
-    base_url: str | None,
-    api_style: str,
+    llm: LlmRuntime,
     company_blacklist: tuple[str, ...],
 ) -> str:
     normalized_blacklist = sorted(
@@ -107,9 +100,9 @@ def build_runtime_signature(
         }
     )
     signature_payload = {
-        "model": model,
-        "base_url": base_url,
-        "api_style": api_style,
+        "model": llm.model,
+        "base_url": llm.base_url,
+        "api_style": llm.api_style,
         "company_blacklist": normalized_blacklist,
         "prompt_template": get_company_extraction_prompt_template(),
     }
@@ -257,9 +250,9 @@ def run_prepared_episode_llm_work(
     checkpoint_payload = prepared_work.to_checkpoint_payload(runtime.runtime_signature)
     attempt = run_company_extraction_from_prompt(
         prepared_work.prompt_text,
-        runtime.llm_client,
+        runtime.llm.client,
         company_blacklist=runtime.company_blacklist,
-        retry_config=runtime.retry_config,
+        retry_config=runtime.llm.retry_config,
     )
     if attempt.error is not None:
         checkpoint_store.save_failed(
