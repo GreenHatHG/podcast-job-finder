@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from typing import Final
 
@@ -8,6 +7,7 @@ from podcast_job_finder.companies.episode_runner import (
     EpisodeExtractionRuntime,
     build_runtime_signature,
 )
+from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
     AUDIO_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
     PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
@@ -48,8 +48,8 @@ def _load_extraction_runtime_from_env(env_prefix: str) -> EpisodeExtractionRunti
 
 
 def _load_company_blacklist() -> tuple[str, ...]:
-    normalized_text = os.getenv(COMPANY_BLACKLIST_ENV_NAME, "").strip()
-    if not normalized_text:
+    normalized_text = get_optional_env(COMPANY_BLACKLIST_ENV_NAME)
+    if normalized_text is None:
         return ()
     return tuple(
         company_name.strip()

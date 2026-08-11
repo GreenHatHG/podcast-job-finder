@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Final
 
+from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.tracing import TraceIdFormatter
 
 
@@ -26,10 +26,9 @@ def configure_logging() -> None:
 
 
 def _resolve_log_level() -> int:
-    raw_log_level = os.getenv(LOG_LEVEL_ENV, DEFAULT_LOG_LEVEL_NAME)
-    normalized_log_level = raw_log_level.strip().upper()
-    if not normalized_log_level:
-        normalized_log_level = DEFAULT_LOG_LEVEL_NAME
+    normalized_log_level = (
+        get_optional_env(LOG_LEVEL_ENV) or DEFAULT_LOG_LEVEL_NAME
+    ).upper()
 
     resolved_log_level = getattr(logging, normalized_log_level, None)
     if not isinstance(resolved_log_level, int):

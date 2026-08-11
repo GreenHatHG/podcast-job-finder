@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Final, TypeVar
 
+from podcast_job_finder.environment import get_optional_env_value
 from podcast_job_finder.llm.config import build_llm_env_name
 from podcast_job_finder.llm.errors import (
     LlmRetryExhaustedError,
@@ -108,36 +108,26 @@ def load_llm_retry_config_from_env(env_prefix: str) -> LlmRetryConfig:
 
 
 def _get_integer_env(env_name: str, default_value: int, *, minimum: int) -> int:
-    raw_value = _get_optional_env(env_name)
-    if raw_value is None:
-        return default_value
     try:
-        parsed_value = int(raw_value)
+        parsed_value = get_optional_env_value(env_name, int)
     except ValueError as error:
         raise _build_integer_config_error(env_name, minimum) from error
+    if parsed_value is None:
+        return default_value
     if parsed_value < minimum:
         raise _build_integer_config_error(env_name, minimum)
     return parsed_value
 
 
 def _get_float_env(env_name: str, default_value: float) -> float:
-    raw_value = _get_optional_env(env_name)
-    if raw_value is None:
-        return default_value
     try:
-        parsed_value = float(raw_value)
+        parsed_value = get_optional_env_value(env_name, float)
     except ValueError as error:
         raise _build_float_config_error(env_name) from error
+    if parsed_value is None:
+        return default_value
     _validate_delay_seconds(parsed_value, env_name)
     return parsed_value
-
-
-def _get_optional_env(env_name: str) -> str | None:
-    value = os.getenv(env_name)
-    if value is None:
-        return None
-    normalized_value = value.strip()
-    return normalized_value or None
 
 
 def _validate_delay_seconds(delay_seconds: float, env_name: str) -> None:

@@ -38,6 +38,7 @@ from podcast_job_finder.audio.segmentation.speech_pipeline import (
 )
 from podcast_job_finder.transcription.models import AudioTranscriberProtocol
 from podcast_job_finder.audio.segmentation.vad import VadConfig
+from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
     load_audio_transcription_llm_runtime_config_from_env,
 )
@@ -209,8 +210,8 @@ def _build_doubao_vad_config(silence_padding_ms: int) -> VadConfig:
 
 
 def _load_firered_python() -> Path:
-    configured_path = os.environ.get(FIRERED_PYTHON_ENV, "").strip()
-    if configured_path:
+    configured_path = get_optional_env(FIRERED_PYTHON_ENV)
+    if configured_path is not None:
         return Path(configured_path)
     return _default_firered_python()
 
@@ -229,8 +230,8 @@ def _default_firered_python() -> Path:
 
 
 def _load_optional_path_env(name: str, default_relative_path: Path) -> Path:
-    value = os.environ.get(name, "").strip()
-    if value:
+    value = get_optional_env(name)
+    if value is not None:
         return Path(value)
     candidates = _candidate_project_paths(default_relative_path)
     return next((path for path in candidates if path.exists()), candidates[-1])

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-import os
 import time
 from typing import Final, Protocol
 
+from podcast_job_finder.environment import get_optional_env_value
 from podcast_job_finder.llm.client import AudioFormat
 from podcast_job_finder.llm.config import build_llm_env_name
 from podcast_job_finder.llm.errors import OpenAiCompatibleConfigError
@@ -81,11 +81,8 @@ class RateLimitedLlmClient:
 
 def load_llm_rate_from_env(env_prefix: str) -> float | None:
     env_name = build_llm_env_name(env_prefix, RATE_PER_MINUTE_ENV_SUFFIX)
-    raw_value = os.getenv(env_name)
-    if raw_value is None or not raw_value.strip():
-        return None
     try:
-        rate_per_minute = float(raw_value.strip())
+        rate_per_minute = get_optional_env_value(env_name, float)
     except ValueError as error:
         raise _build_rate_config_error(env_name) from error
     _validate_rate(rate_per_minute, env_name)

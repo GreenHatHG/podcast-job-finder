@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass
 from typing import Final
 
+from podcast_job_finder.environment import get_optional_env_value
 from podcast_job_finder.llm.rate_limit import load_llm_rate_from_env
 from podcast_job_finder.llm.runtime import PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX
 
@@ -35,19 +35,14 @@ def load_pipeline_rate_config_from_env() -> PipelineRateConfig:
 
 
 def _get_optional_rate_env(env_name: str) -> float | None:
-    raw_value = os.getenv(env_name)
-    if raw_value is None:
-        return None
-
-    normalized_value = raw_value.strip()
-    if not normalized_value:
-        return None
     try:
-        parsed_value = float(normalized_value)
+        parsed_value = get_optional_env_value(env_name, float)
     except ValueError as error:
         raise PipelineRateConfigError(
             INVALID_RATE_ENV_TEMPLATE.format(env_name=env_name)
         ) from error
+    if parsed_value is None:
+        return None
 
     _validate_optional_rate(parsed_value, env_name)
     return parsed_value

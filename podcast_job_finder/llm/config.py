@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Final
 
+from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm.errors import OpenAiCompatibleConfigError
 
 
@@ -41,15 +41,13 @@ def load_openai_compatible_config_from_env(
     api_key = _get_required_env(api_key_env)
     model = _get_required_env(model_env)
     api_style = _get_required_env(api_style_env)
-    normalized_api_style = api_style.strip()
-    _validate_api_style(normalized_api_style, api_style_env)
+    _validate_api_style(api_style, api_style_env)
 
-    base_url = os.getenv(base_url_env)
     return OpenAiCompatibleConfig(
         api_key=api_key,
         model=model,
-        api_style=normalized_api_style,
-        base_url=_normalize_optional_env_value(base_url),
+        api_style=api_style,
+        base_url=get_optional_env(base_url_env),
     )
 
 
@@ -65,17 +63,9 @@ def build_llm_env_name(env_prefix: str, suffix: str) -> str:
 
 
 def _get_required_env(env_name: str) -> str:
-    normalized_value = _normalize_optional_env_value(os.getenv(env_name))
+    normalized_value = get_optional_env(env_name)
     if normalized_value is None:
         raise OpenAiCompatibleConfigError(
             MISSING_ENV_ERROR_TEMPLATE.format(env_name=env_name)
         )
     return normalized_value
-
-
-def _normalize_optional_env_value(value: str | None) -> str | None:
-    if value is None:
-        return None
-
-    normalized_value = value.strip()
-    return normalized_value or None
