@@ -190,7 +190,7 @@ def restore_success_checkpoint(
     return CompletedEpisodeExtraction(
         episode=replace(
             checkpoint_context.episode,
-            title=_resolve_title(checkpoint.state.title, work_item.title),
+            title=_resolve_text(checkpoint.state.title, work_item.title),
             pub_date=_resolve_text(checkpoint.state.pub_date, work_item.pub_date),
         ),
         episode_key=checkpoint_context.episode_key,
@@ -223,7 +223,7 @@ def prepare_episode_llm_work(
         ):
             logger.info("命中未完成检查点，直接继续 LLM：episode_key=%s", episode_key)
             return checkpoint_context.build_prepared_work(
-                title=_resolve_title(checkpoint.state.title, work_item.title),
+                title=_resolve_text(checkpoint.state.title, work_item.title),
                 pub_date=_resolve_text(
                     checkpoint.state.pub_date,
                     work_item.pub_date,
@@ -236,7 +236,7 @@ def prepare_episode_llm_work(
     prompt_text = build_company_extraction_prompt(
         build_company_extraction_input(episode)
     )
-    title = _resolve_title(episode.title, work_item.title)
+    title = _resolve_text(episode.title, work_item.title)
     prepared_work = checkpoint_context.build_prepared_work(
         title=title,
         pub_date=work_item.pub_date,
@@ -300,10 +300,6 @@ def _load_episode_checkpoint_context(
         episode_key=episode_key,
         checkpoint=checkpoint_store.load(episode_key),
     )
-
-
-def _resolve_title(primary: str | None, fallback: str | None) -> str | None:
-    return _resolve_text(primary, fallback)
 
 
 def _resolve_text(primary: str | None, fallback: str | None) -> str | None:

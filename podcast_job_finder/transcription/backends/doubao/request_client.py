@@ -71,7 +71,12 @@ class DoubaoRequestClient:
         )
 
     def collect_responses(self, path: Path) -> SessionResponses:
-        return asyncio.run(self._collect_responses(path))
+        return asyncio.run(
+            self._collect_responses_with_config(
+                path,
+                self._asr_config,
+            )
+        )
 
     async def collect_probe_responses(self, path: Path) -> SessionResponses:
         return await self._collect_responses_with_config(
@@ -98,15 +103,6 @@ class DoubaoRequestClient:
                 request.path,
                 request.config,
             )
-        )
-
-    async def _collect_responses(
-        self,
-        path: Path,
-    ) -> SessionResponses:
-        return await self._collect_responses_with_config(
-            path,
-            self._asr_config,
         )
 
     async def _collect_responses_with_config(
