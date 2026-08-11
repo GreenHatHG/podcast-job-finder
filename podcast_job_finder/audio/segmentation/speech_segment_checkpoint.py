@@ -196,21 +196,6 @@ def _parse_segment_record(
         output_dir=output_dir,
         audio_format=audio_format,
     )
-    return _build_exported_segment(
-        index=index,
-        start_sample=start_sample,
-        end_sample=end_sample,
-        file_path=file_path,
-    )
-
-
-def _build_exported_segment(
-    *,
-    index: int,
-    start_sample: int,
-    end_sample: int,
-    file_path: Path,
-) -> ExportedSpeechSegment:
     if index <= 0 or start_sample < 0 or end_sample <= start_sample:
         raise ValueError(
             "语音片段位置无效："
