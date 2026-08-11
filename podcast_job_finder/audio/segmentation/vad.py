@@ -8,9 +8,11 @@ import numpy as np
 from numpy.typing import NDArray
 from ten_vad import TenVad  # type: ignore[import-untyped]
 
+from podcast_job_finder.audio.segmentation._segment_candidates import (
+    SegmentPartitionConfig,
+)
 from podcast_job_finder.audio.segmentation._segment_split import (
     MIN_CUT_POSITION_RATIO,
-    SegmentPartitionConfig,
     optimize_segment_partition,
 )
 from podcast_job_finder.audio.segmentation.normalized_audio import NormalizedAudio

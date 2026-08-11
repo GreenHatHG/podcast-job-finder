@@ -42,14 +42,6 @@ class CutCandidate:
     mean_energy: float
 
 
-@dataclass(slots=True, frozen=True)
-class _SilenceCandidateConfig:
-    segment_start_frame: int
-    segment_end_frame: int
-    energy_context_frames: int
-    frame_samples: int
-
-
 def build_silence_candidates(
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
@@ -89,21 +81,22 @@ def build_silence_candidates(
     # `candidates` 只保存通过后续声音检查的停顿。
     candidates = []
 
-    # 每个停顿都使用相同的检查范围和音频规格，将这些共用信息集中保存，
-    # 可以避免在循环中反复拼装相同参数。
-    candidate_config = _SilenceCandidateConfig(
-        segment_start_frame=start_frame,
-        segment_end_frame=end_frame,
-        energy_context_frames=energy_context_frames,
-        frame_samples=frame_samples,
-    )
-
     # 逐个检查找到的停顿。某些地方虽然被标成停顿，实际仍可能包含较轻的讲话声。
     for interval in intervals:
+        energy_start = max(
+            start_frame,
+            interval.start_frame - energy_context_frames,
+        )
+        energy_end = min(
+            end_frame,
+            interval.end_frame + energy_context_frames,
+        )
         candidate = _build_silence_candidate(
             interval,
             audio=audio,
-            config=candidate_config,
+            energy_start=energy_start,
+            energy_end=energy_end,
+            frame_samples=frame_samples,
         )
 
         # 返回 None 表示这个停顿没有通过检查，不适合作为切点。
@@ -117,33 +110,21 @@ def _build_silence_candidate(
     interval: SilenceInterval,
     *,
     audio: NormalizedAudio,
-    config: _SilenceCandidateConfig,
+    energy_start: int,
+    energy_end: int,
+    frame_samples: int,
 ) -> CutCandidate | None:
     """
     语音识别结果标出的“停顿”有时仍包含轻声讲话。这个函数会读取停顿及其
     前后的一小段声音，确认停顿处确实明显更安静。检查通过时返回一个候选切点，
     检查失败时返回 `None`，让上层逻辑忽略这个位置。
     """
-    # 从停顿起点向前多取一小段声音，用来了解停顿前正常讲话的音量。
-    # max 可以保证读取范围不会超出当前语音片段的起点。
-    energy_start = max(
-        config.segment_start_frame,
-        interval.start_frame - config.energy_context_frames,
-    )
-
-    # 从停顿终点向后也多取一小段声音，用来了解停顿后恢复讲话时的音量。
-    # min 可以保证读取范围不会超出当前语音片段的终点。
-    energy_end = min(
-        config.segment_end_frame,
-        interval.end_frame + config.energy_context_frames,
-    )
-
     # 读取整个检查范围内每个短时间段的声音大小。数值越小，声音越安静。
     frame_energies = _read_frame_energies(
         audio,
         energy_start,
         energy_end,
-        frame_samples=config.frame_samples,
+        frame_samples=frame_samples,
     )
 
     # frame_energies 从 energy_start 开始记录，下面两个相对位置用于找到

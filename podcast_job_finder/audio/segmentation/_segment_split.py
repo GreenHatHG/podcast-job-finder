@@ -9,8 +9,8 @@ from numpy.typing import NDArray
 
 from podcast_job_finder.audio.segmentation._pcm import milliseconds_to_frames
 from podcast_job_finder.audio.segmentation._segment_candidates import (
-    BoundarySearchConfig,
     SegmentBoundary,
+    SegmentPartitionConfig,
     build_segment_boundaries,
 )
 from podcast_job_finder.audio.segmentation.normalized_audio import NormalizedAudio
@@ -31,14 +31,6 @@ BOUNDARY_QUALITY_LOSS_WEIGHT: Final = 0.75
 SEGMENT_LENGTH_LOSS_WEIGHT: Final = 0.25
 SHORT_SEGMENT_LOSS_WEIGHT: Final = 1.0
 ADDITIONAL_SEGMENT_LOSS: Final = 0.05
-
-
-@dataclass(slots=True, frozen=True)
-class SegmentPartitionConfig:
-    min_speech_frames: int
-    max_speech_frames: int
-    overlap_frames: int
-    frame_samples: int
 
 
 @dataclass(slots=True)
@@ -63,11 +55,7 @@ def optimize_segment_partition(
         segments,
         speech_frames=speech_frames,
         audio=audio,
-        config=BoundarySearchConfig(
-            max_speech_frames=config.max_speech_frames,
-            overlap_frames=config.overlap_frames,
-            frame_samples=config.frame_samples,
-        ),
+        config=config,
     )
     boundary_losses = _calculate_boundary_losses(
         boundaries,

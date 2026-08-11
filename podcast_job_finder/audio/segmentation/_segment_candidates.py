@@ -26,7 +26,8 @@ class SegmentBoundary:
 
 
 @dataclass(slots=True, frozen=True)
-class BoundarySearchConfig:
+class SegmentPartitionConfig:
+    min_speech_frames: int
     max_speech_frames: int
     overlap_frames: int
     frame_samples: int
@@ -37,7 +38,7 @@ def build_segment_boundaries(
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    config: BoundarySearchConfig,
+    config: SegmentPartitionConfig,
 ) -> list[SegmentBoundary]:
     """整理出所有可供后续分段使用的边界。
 
@@ -121,7 +122,7 @@ def _build_internal_boundaries(
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    config: BoundarySearchConfig,
+    config: SegmentPartitionConfig,
     fallback_candidates: list[CutCandidate],
 ) -> list[SegmentBoundary]:
     """为一段连续语音寻找可用的内部切分位置。
