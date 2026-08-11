@@ -18,6 +18,7 @@ DOUBAO_IMPORT_ERROR = (
 
 class DoubaoResponseTypes(Protocol):
     FINAL_RESULT: object
+    SESSION_FINISHED: object
     ERROR: object
 
 

@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.transcription.models import AudioTranscriptionError
 
 from .request_scheduler import DoubaoRequestScheduler
 from .response import AsrResponseProtocol
 
 
 logger = logging.getLogger(__name__)
+DOUBAO_REQUEST_ERROR = "豆包 ASR 请求失败：path={path} error={error}"
+
+
+class DoubaoRequestError(AudioTranscriptionError):
+    """豆包请求在底层客户端完成重试后仍然失败。"""
 
 
 SessionResponses = list[AsrResponseProtocol]
@@ -123,10 +129,15 @@ class DoubaoRequestClient:
         config: object,
     ) -> SessionResponses:
         responses = []
-        async for response in self._transcribe_stream(
-            path,
-            config=config,
-            realtime=True,
-        ):
-            responses.append(response)
+        try:
+            async for response in self._transcribe_stream(
+                path,
+                config=config,
+                realtime=True,
+            ):
+                responses.append(response)
+        except Exception as error:
+            raise DoubaoRequestError(
+                DOUBAO_REQUEST_ERROR.format(path=path, error=error)
+            ) from error
         return responses

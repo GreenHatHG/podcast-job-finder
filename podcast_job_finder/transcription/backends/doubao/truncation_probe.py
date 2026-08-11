@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 class ProbeResponseTypes(Protocol):
     FINAL_RESULT: object
+    SESSION_FINISHED: object
     ERROR: object
 
 
@@ -104,12 +105,10 @@ class DoubaoTruncationProbeRunner:
             responses,
             final_response_type=self._response_types.FINAL_RESULT,
             error_response_type=self._response_types.ERROR,
+            terminal_response_type=self._response_types.SESSION_FINISHED,
         )
         error = None
-        if (
-            not response_summary.has_final_response
-            and response_summary.has_error_response
-        ):
+        if not response_summary.is_complete:
             error = DOUBAO_RESPONSE_ERROR.format(path=probe.path)
         return TruncationProbeDiagnostics(
             start_ms=probe.start_ms,
