@@ -182,9 +182,8 @@ def _run_cached_extraction(
     context.checkpoint_store.save_prepared(payload)
     attempt = run_company_extraction_from_prompt(
         prompt,
-        runtime.llm.client,
+        runtime.llm,
         company_blacklist=company_blacklist,
-        retry_config=runtime.llm.retry_config,
         result_validator=result_validator,
     )
     if attempt.error is not None:

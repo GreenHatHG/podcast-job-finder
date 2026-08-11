@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Callable, Collection, Final, Protocol, Sequence
+from typing import Callable, Collection, Final, Sequence
 
 from podcast_job_finder.companies.models import (
     COMPANIES_FIELD,
@@ -16,7 +16,7 @@ from podcast_job_finder.companies.models import (
 )
 from podcast_job_finder.llm import (
     EmptyLlmResponseError,
-    LlmRetryConfig,
+    LlmRuntime,
     LlmRetryExhaustedError,
     OpenAiCompatibleLlmError,
     RetryableOpenAiCompatibleLlmError,
@@ -75,12 +75,6 @@ COMPANY_EXTRACTION_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
     EmptyLlmResponseError,
     CompanyExtractionError,
 )
-
-
-class LlmClientProtocol(Protocol):
-    def generate(self, prompt: str) -> str:
-        """Generates a text response for the provided prompt."""
-        ...
 
 
 def build_company_extraction_input(episode: EpisodeInfo) -> str:
@@ -170,9 +164,8 @@ def normalize_company_mentions(
 
 def run_company_extraction_from_prompt(
     prompt: str,
-    llm_client: LlmClientProtocol,
+    llm: LlmRuntime,
     company_blacklist: Collection[str] | None = None,
-    retry_config: LlmRetryConfig | None = None,
     result_validator: Callable[[CompanyExtractionResult], None] | None = None,
 ) -> CompanyExtractionAttempt:
     last_response_text: str | None = None
@@ -180,7 +173,7 @@ def run_company_extraction_from_prompt(
     def request_company_extraction() -> CompanyExtractionAttempt:
         nonlocal last_response_text
         last_response_text = None
-        response_text = llm_client.generate(prompt)
+        response_text = llm.client.generate(prompt)
         last_response_text = response_text
         extraction_result = parse_company_extraction_output(
             response_text,
@@ -196,7 +189,7 @@ def run_company_extraction_from_prompt(
     try:
         result, attempt = execute_llm_with_retry(
             request_company_extraction,
-            retry_config=retry_config,
+            retry_config=llm.retry_config,
             retryable_errors=COMPANY_EXTRACTION_RETRYABLE_ERRORS,
         )
     except LlmRetryExhaustedError as error:

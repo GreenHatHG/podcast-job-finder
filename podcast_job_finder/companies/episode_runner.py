@@ -250,9 +250,8 @@ def run_prepared_episode_llm_work(
     checkpoint_payload = prepared_work.to_checkpoint_payload(runtime.runtime_signature)
     attempt = run_company_extraction_from_prompt(
         prepared_work.prompt_text,
-        runtime.llm.client,
+        runtime.llm,
         company_blacklist=runtime.company_blacklist,
-        retry_config=runtime.llm.retry_config,
     )
     if attempt.error is not None:
         checkpoint_store.save_failed(
