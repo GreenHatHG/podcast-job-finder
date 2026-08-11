@@ -16,45 +16,47 @@ from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
 )
-from podcast_job_finder.audio.speech_segment_checkpoint import (
+from podcast_job_finder.audio.segmentation.speech_segment_checkpoint import (
     SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
     restore_or_export_speech_segments,
 )
-from podcast_job_finder.audio.transcription_checkpoint import (
+from podcast_job_finder.transcription.checkpoint import (
     SegmentTranscriptionCheckpointStore,
     transcribe_speech_segments_with_checkpoints,
 )
-from podcast_job_finder.audio.segment_export import (
+from podcast_job_finder.audio.segmentation.segment_export import (
     MP3_SEGMENT_AUDIO_FORMAT,
     WAV_SEGMENT_AUDIO_FORMAT,
     SegmentAudioFormat,
     SpeechSegmentExportConfig,
     parse_segment_audio_format,
 )
-from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
-from podcast_job_finder.audio.transcription import (
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    DEFAULT_SILENCE_PADDING_MS,
+)
+from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     TranscribedSpeechSegment,
 )
-from podcast_job_finder.audio.transcription_runtime import (
+from podcast_job_finder.transcription.runtime import (
     AudioTranscriptionConfigError,
     AudioTranscriptionRuntime,
     load_audio_transcription_runtime_from_env,
 )
-from podcast_job_finder.audio.transcription_manifest import (
+from podcast_job_finder.transcription.manifest import (
     TRANSCRIPTION_FILE_NAME,
     save_audio_transcription_manifest,
 )
-from podcast_job_finder.audio.transcription_article import (
+from podcast_job_finder.transcription.formatting.article import (
     FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME,
     TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
 )
-from podcast_job_finder.audio.transcription_formatter import (
+from podcast_job_finder.transcription.formatting.formatter import (
     EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
     format_transcription_segments,
 )
-from podcast_job_finder.audio.transcription_confidence_report import (
+from podcast_job_finder.transcription.quality_report import (
     TRANSCRIPTION_QUALITY_REPORT_FILE_NAME,
     save_transcription_quality_report,
 )

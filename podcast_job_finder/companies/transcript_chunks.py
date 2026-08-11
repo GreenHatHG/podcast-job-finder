@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Sequence
 
-from podcast_job_finder.audio.transcription import TranscribedSpeechSegment
+from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 
 
 DEFAULT_TRANSCRIPT_CHUNK_MAX_CHARS: Final = 20_000

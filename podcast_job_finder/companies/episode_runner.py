@@ -26,9 +26,7 @@ from podcast_job_finder.companies.checkpoint import (
     LlmCheckpointStore,
 )
 from podcast_job_finder.llm import LlmRetryConfig
-from podcast_job_finder.episode import (
-    extract_episode_id_from_url,
-)
+from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 
 
@@ -44,29 +42,6 @@ class EpisodeExtractionRuntime:
     base_url: str | None
     api_style: str
     runtime_signature: str
-
-
-@dataclass(slots=True, frozen=True)
-class EpisodeWorkItem:
-    episode_url: str
-    eid: str | None = None
-    title: str | None = None
-    pub_date: str | None = None
-    audio_url: str | None = None
-
-    def resolve_episode_id(self) -> str | None:
-        normalized_eid = (self.eid or "").strip()
-        if normalized_eid:
-            return normalized_eid
-        return extract_episode_id_from_url(self.episode_url)
-
-    def to_result_metadata(self, *, eid: str | None = None) -> dict[str, object]:
-        return _build_episode_result_metadata(
-            episode_url=self.episode_url,
-            eid=eid or self.eid,
-            title=self.title,
-            pub_date=self.pub_date,
-        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -339,18 +314,3 @@ def _resolve_text(primary: str | None, fallback: str | None) -> str | None:
     if normalized_fallback:
         return normalized_fallback
     return None
-
-
-def _build_episode_result_metadata(
-    *,
-    episode_url: str,
-    eid: str | None,
-    title: str | None,
-    pub_date: str | None,
-) -> dict[str, object]:
-    return {
-        "eid": eid,
-        "title": title,
-        "pub_date": pub_date,
-        "episode_url": episode_url,
-    }

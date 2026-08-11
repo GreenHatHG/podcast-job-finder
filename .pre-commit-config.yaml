@@ -45,6 +45,7 @@ repos:
     hooks:
       - id: vulture
         pass_filenames: false
+        language_version: python3.14
 
   - repo: local
     hooks:
@@ -57,7 +58,7 @@ repos:
 
       - id: pylint
         name: pylint
-        entry: uv run python -m pylint --disable=missing-module-docstring,missing-class-docstring,missing-function-docstring,too-few-public-methods,unnecessary-ellipsis --score=n
+        entry: uv run python -m pylint --disable=duplicate-code,missing-module-docstring,missing-class-docstring,missing-function-docstring,too-few-public-methods,unnecessary-ellipsis --score=n
         language: system
         types: [python]
 

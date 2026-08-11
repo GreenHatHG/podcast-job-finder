@@ -168,9 +168,7 @@ uv run podcast-download-rss \
 ```python
 from pathlib import Path
 
-from podcast_job_finder.audio.speech_pipeline import (
-    detect_and_export_speech_segments,
-)
+from podcast_job_finder.audio import detect_and_export_speech_segments
 
 segments = detect_and_export_speech_segments(
     Path("output/audio/<eid>/source.m4a"),
@@ -210,13 +208,16 @@ output/
 
 ```text
 podcast_job_finder/
-├── audio/                  # 音频规范化、VAD 检测、片段导出与转录
+├── audio/                  # 节目音频下载、规范化、VAD 检测与片段导出
+│   ├── episode_audio/      # 节目音频下载和本地文件保存
+│   └── segmentation/       # 音频规范化、VAD、切分和片段导出
 ├── cli/                    # 命令行入口
 ├── companies/              # 公司提取和处理流程
+├── episode/                # 页面解析、节目模型与单集 URL 工具
 ├── http/                   # 共享 HTTP 配置
 ├── llm/                    # OpenAI 兼容客户端、配置与重试
 ├── rss/                    # RSS 清单解析与批量音频下载
-└── episode/                # 页面解析与单集 URL/页面工具
+└── transcription/          # 转写流程、后端、检查点和文本整理
 ```
 
 ## 开发检查

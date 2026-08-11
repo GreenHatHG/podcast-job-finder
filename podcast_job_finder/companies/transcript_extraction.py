@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Final, Sequence
 
-from podcast_job_finder.audio.transcription import TranscribedSpeechSegment
+from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 from podcast_job_finder.companies.checkpoint import (
     STATUS_SUCCESS,
     LlmCheckpointSavePayload,
@@ -14,10 +14,7 @@ from podcast_job_finder.companies.candidate_merge import (
     build_candidate_merge_prompt,
     validate_merged_result,
 )
-from podcast_job_finder.companies.episode_runner import (
-    EpisodeExtractionRuntime,
-    EpisodeWorkItem,
-)
+from podcast_job_finder.companies.episode_runner import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import (
     build_company_extraction_input,
     build_company_extraction_prompt,
@@ -35,6 +32,7 @@ from podcast_job_finder.companies.transcript_chunks import (
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.episode import EpisodeInfo
+from podcast_job_finder.episode.models import EpisodeWorkItem
 
 
 CHUNK_CHECKPOINT_KEY_TEMPLATE: Final = "chunk_{index:04d}"

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Final
 
+from podcast_job_finder.episode.urls import extract_episode_id_from_url
+
 
 CONTENT_SECTION_TITLE: Final = "标题"
 AUDIO_URL_SECTION_TITLE: Final = "音频 URL"
@@ -76,3 +78,26 @@ class EpisodeInfo:
             comment_lines.extend(comment.to_text_lines(str(comment_index)))
         sections.append("\n".join(comment_lines))
         return "\n".join(sections)
+
+
+@dataclass(slots=True, frozen=True)
+class EpisodeWorkItem:
+    episode_url: str
+    eid: str | None = None
+    title: str | None = None
+    pub_date: str | None = None
+    audio_url: str | None = None
+
+    def resolve_episode_id(self) -> str | None:
+        normalized_eid = (self.eid or "").strip()
+        if normalized_eid:
+            return normalized_eid
+        return extract_episode_id_from_url(self.episode_url)
+
+    def to_result_metadata(self, *, eid: str | None = None) -> dict[str, object]:
+        return {
+            "eid": eid or self.eid,
+            "title": self.title,
+            "pub_date": self.pub_date,
+            "episode_url": self.episode_url,
+        }

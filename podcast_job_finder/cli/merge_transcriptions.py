@@ -6,15 +6,15 @@ import sys
 from pathlib import Path
 from typing import Final, Sequence
 
-from podcast_job_finder.audio.transcription_article import (
+from podcast_job_finder.transcription.formatting.article import (
     FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME,
     save_transcription_article,
 )
-from podcast_job_finder.audio.transcription_formatter import (
+from podcast_job_finder.transcription.formatting.formatter import (
     EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
     format_transcription_segments,
 )
-from podcast_job_finder.audio.transcription_input import (
+from podcast_job_finder.transcription.formatting.input import (
     TranscriptionInputError,
     load_transcription_inputs,
 )

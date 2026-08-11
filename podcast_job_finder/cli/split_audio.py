@@ -12,13 +12,15 @@ from podcast_job_finder.audio import (
     detect_and_export_speech_segments,
 )
 from podcast_job_finder.logging import configure_logging
-from podcast_job_finder.audio.segment_export import (
+from podcast_job_finder.audio.segmentation.segment_export import (
     DEFAULT_SEGMENT_AUDIO_FORMAT,
     SUPPORTED_SEGMENT_AUDIO_FORMATS,
     SpeechSegmentExportConfig,
     parse_segment_audio_format,
 )
-from podcast_job_finder.audio.speech_pipeline import DEFAULT_SILENCE_PADDING_MS
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    DEFAULT_SILENCE_PADDING_MS,
+)
 
 
 PROGRAM_NAME: Final = "podcast-split-audio"

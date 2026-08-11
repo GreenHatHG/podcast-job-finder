@@ -10,11 +10,11 @@ from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.episode_runner import (
     CompletedEpisodeExtraction,
     EpisodeExtractionRuntime,
-    EpisodeWorkItem,
     PreparedEpisodeLlmWork,
     restore_or_prepare_episode_work,
     run_prepared_episode_llm_work,
 )
+from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.page_loader import (
     DEFAULT_EPISODE_PAGE_LOADER,

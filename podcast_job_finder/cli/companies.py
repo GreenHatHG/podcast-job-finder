@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
-from podcast_job_finder.audio.batch_transcription import (
+from podcast_job_finder.transcription.batch import (
     RESULT_STATUS_SUCCESS,
     BatchAudioTranscriptionError,
     BatchAudioTranscriptionResult,
@@ -15,14 +15,14 @@ from podcast_job_finder.audio.batch_transcription import (
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
 )
-from podcast_job_finder.audio.batch_transcription_schedule import (
+from podcast_job_finder.transcription.schedule import (
     DEFAULT_AUDIO_PROCESSING_MODE,
     SUPPORTED_AUDIO_PROCESSING_MODES,
     AudioProcessingMode,
 )
 from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
-from podcast_job_finder.audio.transcription_manifest import TRANSCRIPTION_FILE_NAME
-from podcast_job_finder.audio.transcription_runtime import (
+from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
+from podcast_job_finder.transcription.runtime import (
     AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
 )
@@ -31,9 +31,9 @@ from podcast_job_finder.companies.audio_pipeline import (
 )
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.episode_runner import (
-    EpisodeWorkItem,
     run_episode_company_extraction,
 )
+from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.pipeline import (
     EXPECTED_EPISODE_ERRORS,
     run_batch_episode_pipeline,
