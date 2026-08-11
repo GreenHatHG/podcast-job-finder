@@ -15,7 +15,6 @@ from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio.segmentation.segment_export import (
     DEFAULT_SEGMENT_AUDIO_FORMAT,
     SUPPORTED_SEGMENT_AUDIO_FORMATS,
-    SpeechSegmentExportConfig,
     parse_segment_audio_format,
 )
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
@@ -34,11 +33,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         segments = detect_and_export_speech_segments(
             args.audio_path,
             output_dir=args.output_dir,
-            export_config=SpeechSegmentExportConfig(
-                silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
-                audio_format=parse_segment_audio_format(args.segment_audio_format),
-                overwrite=args.overwrite,
-            ),
+            silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
+            audio_format=parse_segment_audio_format(args.segment_audio_format),
+            overwrite=args.overwrite,
         )
     except (AudioFileDecodeError, AudioSegmentExportError, ValueError) as error:
         print(str(error), file=sys.stderr)

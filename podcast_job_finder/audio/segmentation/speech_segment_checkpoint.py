@@ -8,7 +8,6 @@ from typing import Final, Mapping, Sequence
 from podcast_job_finder.audio.segmentation.segment_export import (
     ExportedSpeechSegment,
     SegmentAudioFormat,
-    SpeechSegmentExportConfig,
 )
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     detect_and_export_speech_segments,
@@ -29,7 +28,9 @@ def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
     output_dir: Path,
     checkpoint_path: Path,
     vad_config: VadConfig,
-    export_config: SpeechSegmentExportConfig,
+    silence_padding_ms: int,
+    audio_format: SegmentAudioFormat,
+    overwrite: bool,
     resume: bool = False,
 ) -> list[ExportedSpeechSegment]:
     restored_segments = None
@@ -38,7 +39,7 @@ def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
             checkpoint_path,
             source_path=source_path,
             output_dir=output_dir,
-            audio_format=export_config.audio_format,
+            audio_format=audio_format,
         )
     if restored_segments is not None:
         logger.info(
@@ -52,7 +53,9 @@ def restore_or_export_speech_segments(  # pylint: disable=too-many-arguments
         source_path,
         output_dir=output_dir,
         config=vad_config,
-        export_config=export_config,
+        silence_padding_ms=silence_padding_ms,
+        audio_format=audio_format,
+        overwrite=overwrite,
     )
     save_speech_segment_checkpoint(
         checkpoint_path,

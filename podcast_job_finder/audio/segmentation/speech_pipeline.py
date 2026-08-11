@@ -8,7 +8,7 @@ from podcast_job_finder.audio.segmentation.normalized_audio import normalize_aud
 from podcast_job_finder.audio.segmentation.segment_export import (
     DEFAULT_SEGMENT_AUDIO_FORMAT,
     ExportedSpeechSegment,
-    SpeechSegmentExportConfig,
+    SegmentAudioFormat,
     _export_speech_segments,
 )
 from podcast_job_finder.audio.segmentation.vad import (
@@ -24,25 +24,24 @@ INVALID_SILENCE_PADDING_ERROR: Final = "silence_padding_ms 必须大于等于 0�
 logger = logging.getLogger(__name__)
 
 
-def detect_and_export_speech_segments(
+def detect_and_export_speech_segments(  # pylint: disable=too-many-arguments
     audio_path: Path,
     *,
     output_dir: Path,
     config: VadConfig = VadConfig(),
-    export_config: SpeechSegmentExportConfig = SpeechSegmentExportConfig(
-        silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
-        audio_format=DEFAULT_SEGMENT_AUDIO_FORMAT,
-    ),
+    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
+    audio_format: SegmentAudioFormat = DEFAULT_SEGMENT_AUDIO_FORMAT,
+    overwrite: bool = False,
 ) -> list[ExportedSpeechSegment]:
     """单次规范化解码音频，依次完成 VAD 检测和片段导出。"""
-    if export_config.silence_padding_ms < 0:
+    if silence_padding_ms < 0:
         raise ValueError(INVALID_SILENCE_PADDING_ERROR)
 
     logger.info(
         "开始切分音频：audio_path=%s output_dir=%s overwrite=%s",
         audio_path,
         output_dir,
-        export_config.overwrite,
+        overwrite,
     )
     logger.debug(
         "音频切分配置：threshold=%.2f min_speech_duration_ms=%d "
@@ -53,8 +52,8 @@ def detect_and_export_speech_segments(
         config.max_speech_duration_ms,
         config.forced_split_overlap_ms,
         config.min_silence_duration_ms,
-        export_config.silence_padding_ms,
-        export_config.audio_format,
+        silence_padding_ms,
+        audio_format,
     )
     logger.info("开始规范化音频：audio_path=%s", audio_path)
     with normalize_audio_file(audio_path, sample_rate=VAD_SAMPLE_RATE) as audio:
@@ -79,7 +78,9 @@ def detect_and_export_speech_segments(
             audio,
             segments,
             output_dir,
-            export_config,
+            silence_padding_ms=silence_padding_ms,
+            audio_format=audio_format,
+            overwrite=overwrite,
         )
         logger.info(
             "音频片段导出完成：segment_count=%d output_dir=%s",

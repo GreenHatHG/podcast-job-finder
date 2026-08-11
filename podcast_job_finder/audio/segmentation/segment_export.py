@@ -61,13 +61,6 @@ class AudioSegmentExportError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class SpeechSegmentExportConfig:
-    silence_padding_ms: int
-    audio_format: SegmentAudioFormat = DEFAULT_SEGMENT_AUDIO_FORMAT
-    overwrite: bool = False
-
-
-@dataclass(slots=True, frozen=True)
 class ExportedSpeechSegment:
     """记录一个语音片段的导出顺序、时间范围和输出文件路径。"""
 
@@ -89,24 +82,27 @@ class ExportedSpeechSegment:
         }
 
 
-def _export_speech_segments(
+def _export_speech_segments(  # pylint: disable=too-many-arguments
     audio: NormalizedAudio,
     segments: Sequence[SpeechSegment],
     output_dir: Path,
-    config: SpeechSegmentExportConfig,
+    *,
+    silence_padding_ms: int,
+    audio_format: SegmentAudioFormat = DEFAULT_SEGMENT_AUDIO_FORMAT,
+    overwrite: bool = False,
 ) -> list[ExportedSpeechSegment]:
     """从规范化 WAV 按采样位置导出说话片段。"""
     _prepare_output_dir(output_dir)
     exported_segments = _prepare_exported_segments(
         segments,
         output_dir=output_dir,
-        overwrite=config.overwrite,
-        audio_format=config.audio_format,
+        overwrite=overwrite,
+        audio_format=audio_format,
     )
     if not exported_segments:
         return []
 
-    silence = _build_silence(config.silence_padding_ms)
+    silence = _build_silence(silence_padding_ms)
     for exported_segment in exported_segments:
         segment = exported_segment.segment
         samples = audio.read_samples(segment.start_sample, segment.end_sample)
@@ -118,8 +114,8 @@ def _export_speech_segments(
             samples,
             target_path=exported_segment.file_path,
             silence=silence,
-            overwrite=config.overwrite,
-            audio_format=config.audio_format,
+            overwrite=overwrite,
+            audio_format=audio_format,
         )
         logger.debug(
             "音频片段已导出：index=%d start_ms=%d end_ms=%d file_path=%s",

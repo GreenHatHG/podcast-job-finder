@@ -23,9 +23,6 @@ from podcast_job_finder.audio.segmentation.speech_segment_checkpoint import (
     SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
     restore_or_export_speech_segments,
 )
-from podcast_job_finder.audio.segmentation.segment_export import (
-    SpeechSegmentExportConfig,
-)
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     AudioTranscriptionResult,
@@ -299,11 +296,9 @@ def _transcribe_prepared_episode(
             output_dir=context.segment_dir,
             checkpoint_path=context.segment_checkpoint_path,
             vad_config=runtime.vad_config,
-            export_config=SpeechSegmentExportConfig(
-                silence_padding_ms=runtime.silence_padding_ms,
-                audio_format=runtime.segment_audio_format,
-                overwrite=True,
-            ),
+            silence_padding_ms=runtime.silence_padding_ms,
+            audio_format=runtime.segment_audio_format,
+            overwrite=True,
             resume=resume,
         )
         transcription_result, all_segments_cached = (

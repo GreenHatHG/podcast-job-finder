@@ -28,7 +28,6 @@ from podcast_job_finder.audio.segmentation.segment_export import (
     MP3_SEGMENT_AUDIO_FORMAT,
     WAV_SEGMENT_AUDIO_FORMAT,
     SegmentAudioFormat,
-    SpeechSegmentExportConfig,
     parse_segment_audio_format,
 )
 from podcast_job_finder.transcription.models import (
@@ -122,11 +121,9 @@ def _run_transcription(
         output_dir=args.output_dir,
         checkpoint_path=args.output_dir / SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
         vad_config=vad_config,
-        export_config=SpeechSegmentExportConfig(
-            silence_padding_ms=transcription_runtime.silence_padding_ms,
-            audio_format=segment_audio_format,
-            overwrite=True,
-        ),
+        silence_padding_ms=transcription_runtime.silence_padding_ms,
+        audio_format=segment_audio_format,
+        overwrite=True,
         resume=args.resume,
     )
     selected_segments = (
