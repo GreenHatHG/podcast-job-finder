@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from pathlib import Path
-from typing import IO, Final
+from typing import Final
 
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
@@ -17,12 +14,16 @@ from podcast_job_finder.transcription.models import (
     TranscriptionOutput,
 )
 
+from ._worker_process import (
+    WORKER_READY_STATUS,
+    WORKER_RESULT_STATUS,
+    JsonLineWorkerProcess,
+    WorkerExitedError,
+    WorkerResponseError,
+)
+
 
 FIRERED_MODEL_NAME: Final = "FireRedASR2-AED-ONNX+FireRedPunc"
-WORKER_READY_STATUS: Final = "ready"
-WORKER_RESULT_STATUS: Final = "result"
-WORKER_SHUTDOWN_COMMAND: Final = "shutdown"
-WORKER_CLOSE_TIMEOUT_SECONDS: Final = 5
 REQUIRED_ASR_FILES: Final = (
     "encoder.int8.onnx",
     "decoder.int8.onnx",
@@ -65,13 +66,26 @@ class FireRedAudioTranscriber:
             raise FireRedConfigError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
         if silence_padding_ms < 0:
             raise FireRedConfigError("silence_padding_ms 必须大于等于 0。")
-        self._python_executable = python_executable
         self._asr_model_dir = asr_model_dir
         self._punc_model_dir = punc_model_dir
         self._ort_provider = ort_provider
-        self._ort_intra_op_threads = ort_intra_op_threads
         self._silence_padding_ms = silence_padding_ms
-        self._process: subprocess.Popen[str] | None = None
+        worker_path = Path(__file__).with_name("worker") / "worker.py"
+        self._worker_process = JsonLineWorkerProcess(
+            command=(
+                str(python_executable),
+                str(worker_path),
+                "--asr-model-dir",
+                str(asr_model_dir),
+                "--punc-model-dir",
+                str(punc_model_dir),
+                "--ort-provider",
+                ort_provider,
+                "--ort-intra-op-threads",
+                str(ort_intra_op_threads),
+            ),
+            stdin_unavailable_error="FireRed 工作进程标准输入不可用。",
+        )
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -88,9 +102,8 @@ class FireRedAudioTranscriber:
         *,
         previous_segment: TranscribedSpeechSegment | None,
     ) -> TranscriptionOutput:
-        process = self._ensure_process()
+        self._ensure_process()
         response = self._request(
-            process,
             {
                 "audio_path": str(segment.file_path.resolve()),
                 "discard_before_ms": self._build_discard_before_ms(
@@ -135,54 +148,27 @@ class FireRedAudioTranscriber:
         return previous_end_ms - segment.segment.start_ms + self._silence_padding_ms
 
     def close(self) -> None:
-        process = self._process
-        self._process = None
-        if process is None or process.poll() is not None:
+        self._worker_process.close()
+
+    def _ensure_process(self) -> None:
+        if self._worker_process.is_running:
             return
         try:
-            self._write_request(process.stdin, {"command": WORKER_SHUTDOWN_COMMAND})
-            process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
-        except BrokenPipeError, OSError, subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-
-    def _ensure_process(self) -> subprocess.Popen[str]:
-        if self._process is not None and self._process.poll() is None:
-            return self._process
-        worker_path = Path(__file__).with_name("worker") / "worker.py"
-        environment = os.environ.copy()
-        environment.setdefault("TOKENIZERS_PARALLELISM", "false")
-        try:
-            process = subprocess.Popen(  # pylint: disable=consider-using-with
-                [
-                    str(self._python_executable),
-                    str(worker_path),
-                    "--asr-model-dir",
-                    str(self._asr_model_dir),
-                    "--punc-model-dir",
-                    str(self._punc_model_dir),
-                    "--ort-provider",
-                    self._ort_provider,
-                    "--ort-intra-op-threads",
-                    str(self._ort_intra_op_threads),
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
-                env=environment,
-            )
+            self._worker_process.start()
         except OSError as error:
             raise AudioTranscriptionError(
                 WORKER_START_ERROR.format(message=str(error))
             ) from error
-        self._process = process
-        ready_response = self._read_response(process)
+        try:
+            ready_response = self._worker_process.read_response()
+        except WorkerExitedError as error:
+            raise AudioTranscriptionError(
+                WORKER_EXIT_ERROR.format(returncode=error.returncode)
+            ) from error
+        except WorkerResponseError as error:
+            raise AudioTranscriptionError(
+                WORKER_RESPONSE_ERROR.format(message=error.response)
+            ) from error
         if ready_response.get("status") != WORKER_READY_STATUS:
             self.close()
             raise AudioTranscriptionError(
@@ -190,50 +176,27 @@ class FireRedAudioTranscriber:
                     message=ready_response.get("error", ready_response)
                 )
             )
-        return process
 
     def _request(
         self,
-        process: subprocess.Popen[str],
         payload: dict[str, object],
     ) -> dict[str, object]:
         try:
-            self._write_request(process.stdin, payload)
+            self._worker_process.write_request(payload)
         except (BrokenPipeError, OSError) as error:
             raise AudioTranscriptionError(
-                WORKER_EXIT_ERROR.format(returncode=process.poll())
+                WORKER_EXIT_ERROR.format(returncode=self._worker_process.returncode)
             ) from error
-        return self._read_response(process)
-
-    @staticmethod
-    def _write_request(stream: IO[str] | None, payload: dict[str, object]) -> None:
-        if stream is None:
-            raise BrokenPipeError("FireRed 工作进程标准输入不可用。")
-        stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
-        stream.flush()
-
-    @staticmethod
-    def _read_response(process: subprocess.Popen[str]) -> dict[str, object]:
-        if process.stdout is None:
-            raise AudioTranscriptionError(
-                WORKER_RESPONSE_ERROR.format(message="标准输出不可用")
-            )
-        response_line = process.stdout.readline()
-        if not response_line:
-            raise AudioTranscriptionError(
-                WORKER_EXIT_ERROR.format(returncode=process.poll())
-            )
         try:
-            response = json.loads(response_line)
-        except json.JSONDecodeError as error:
+            return self._worker_process.read_response()
+        except WorkerExitedError as error:
             raise AudioTranscriptionError(
-                WORKER_RESPONSE_ERROR.format(message=response_line.strip())
+                WORKER_EXIT_ERROR.format(returncode=error.returncode)
             ) from error
-        if not isinstance(response, dict):
+        except WorkerResponseError as error:
             raise AudioTranscriptionError(
-                WORKER_RESPONSE_ERROR.format(message=response)
-            )
-        return response
+                WORKER_RESPONSE_ERROR.format(message=error.response)
+            ) from error
 
     def _parse_timestamps(
         self,

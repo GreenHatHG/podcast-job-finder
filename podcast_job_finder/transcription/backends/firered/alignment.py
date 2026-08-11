@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 from pathlib import Path
-from typing import IO, Final
+from typing import Final
 
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     CharacterAlignment,
 )
 
+from ._worker_process import (
+    WORKER_READY_STATUS,
+    WORKER_RESULT_STATUS,
+    JsonLineWorkerProcess,
+    WorkerExitedError,
+    WorkerResponseError,
+)
 
-WORKER_READY_STATUS: Final = "ready"
-WORKER_RESULT_STATUS: Final = "result"
-WORKER_SHUTDOWN_COMMAND: Final = "shutdown"
-WORKER_CLOSE_TIMEOUT_SECONDS: Final = 5
+
 REQUIRED_ALIGNMENT_MODEL_FILES: Final = (
     "encoder.int8.onnx",
     "ctc.int8.onnx",
@@ -38,11 +39,22 @@ class FireRedTextAlignmentClient:
         _require_model_files(asr_model_dir)
         if ort_intra_op_threads <= 0:
             raise ValueError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
-        self._python_executable = python_executable
         self._asr_model_dir = asr_model_dir
         self._ort_provider = ort_provider
-        self._ort_intra_op_threads = ort_intra_op_threads
-        self._process: subprocess.Popen[str] | None = None
+        worker_path = Path(__file__).with_name("worker") / "alignment_worker.py"
+        self._worker_process = JsonLineWorkerProcess(
+            command=(
+                str(python_executable),
+                str(worker_path),
+                "--asr-model-dir",
+                str(asr_model_dir),
+                "--ort-provider",
+                ort_provider,
+                "--ort-intra-op-threads",
+                str(ort_intra_op_threads),
+            ),
+            stdin_unavailable_error="FireRed CTC 工作进程标准输入不可用。",
+        )
 
     def metadata(self) -> dict[str, object]:
         return {
@@ -52,9 +64,9 @@ class FireRedTextAlignmentClient:
         }
 
     def align(self, audio_path: Path, text: str) -> tuple[CharacterAlignment, ...]:
+        self._ensure_process()
         response = self._request(
-            self._ensure_process(),
-            {"audio_path": str(audio_path.resolve()), "text": text},
+            {"audio_path": str(audio_path.resolve()), "text": text}
         )
         if response.get("status") != WORKER_RESULT_STATUS:
             raise AudioTranscriptionError(
@@ -68,61 +80,35 @@ class FireRedTextAlignmentClient:
         return tuple(_parse_alignment(item) for item in value)
 
     def close(self) -> None:
-        process = self._process
-        self._process = None
-        if process is None or process.poll() is not None:
-            return
-        try:
-            _write_request(process.stdin, {"command": WORKER_SHUTDOWN_COMMAND})
-            process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
-        except BrokenPipeError, OSError, subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=WORKER_CLOSE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        self._worker_process.close()
 
-    def _ensure_process(self) -> subprocess.Popen[str]:
-        if self._process is not None and self._process.poll() is None:
-            return self._process
-        worker_path = Path(__file__).with_name("worker") / "alignment_worker.py"
-        environment = os.environ.copy()
-        environment.setdefault("TOKENIZERS_PARALLELISM", "false")
-        process = subprocess.Popen(  # pylint: disable=consider-using-with
-            [
-                str(self._python_executable),
-                str(worker_path),
-                "--asr-model-dir",
-                str(self._asr_model_dir),
-                "--ort-provider",
-                self._ort_provider,
-                "--ort-intra-op-threads",
-                str(self._ort_intra_op_threads),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            env=environment,
-        )
-        self._process = process
-        response = _read_response(process)
+    def _ensure_process(self) -> None:
+        if self._worker_process.is_running:
+            return
+        self._worker_process.start()
+        try:
+            response = self._worker_process.read_response()
+        except (WorkerExitedError, WorkerResponseError) as error:
+            raise AudioTranscriptionError(
+                WORKER_ERROR.format(message=_worker_error_message(error))
+            ) from error
         if response.get("status") != WORKER_READY_STATUS:
             self.close()
             raise AudioTranscriptionError(
                 WORKER_ERROR.format(message=response.get("error", response))
             )
-        return process
 
-    @staticmethod
     def _request(
-        process: subprocess.Popen[str],
+        self,
         payload: dict[str, object],
     ) -> dict[str, object]:
-        _write_request(process.stdin, payload)
-        return _read_response(process)
+        self._worker_process.write_request(payload)
+        try:
+            return self._worker_process.read_response()
+        except (WorkerExitedError, WorkerResponseError) as error:
+            raise AudioTranscriptionError(
+                WORKER_ERROR.format(message=_worker_error_message(error))
+            ) from error
 
 
 def _parse_alignment(value: object) -> CharacterAlignment:
@@ -154,30 +140,10 @@ def _parse_integer(payload: dict[str, object], field_name: str) -> int:
     return value
 
 
-def _write_request(stream: IO[str] | None, payload: dict[str, object]) -> None:
-    if stream is None:
-        raise BrokenPipeError("FireRed CTC 工作进程标准输入不可用。")
-    stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    stream.flush()
-
-
-def _read_response(process: subprocess.Popen[str]) -> dict[str, object]:
-    if process.stdout is None:
-        raise AudioTranscriptionError(WORKER_ERROR.format(message="标准输出不可用"))
-    line = process.stdout.readline()
-    if not line:
-        raise AudioTranscriptionError(
-            WORKER_ERROR.format(message=f"进程退出：{process.poll()}")
-        )
-    try:
-        response = json.loads(line)
-    except json.JSONDecodeError as error:
-        raise AudioTranscriptionError(
-            WORKER_ERROR.format(message=line.strip())
-        ) from error
-    if not isinstance(response, dict):
-        raise AudioTranscriptionError(WORKER_ERROR.format(message=response))
-    return response
+def _worker_error_message(error: WorkerExitedError | WorkerResponseError) -> object:
+    if isinstance(error, WorkerExitedError):
+        return f"进程退出：{error.returncode}"
+    return error.response
 
 
 def _require_file(path: Path, field_name: str) -> None:
