@@ -62,61 +62,53 @@ class TruncationProbeRequest:
     assessment: TruncationAssessment
 
 
-class DoubaoTruncationProbeRunner:
-    def __init__(
-        self,
-        *,
-        collect_responses: CollectResponses,
-        response_types: ProbeResponseTypes,
-    ) -> None:
-        self._collect_responses = collect_responses
-        self._response_types = response_types
+def run_doubao_truncation_probe(
+    request: TruncationProbeRequest,
+    *,
+    collect_responses: CollectResponses,
+    response_types: ProbeResponseTypes,
+) -> TruncationProbeDiagnostics:
+    with build_truncation_probe_audio(
+        request.audio_path,
+        request.assessment,
+    ) as probe:
+        try:
+            responses: ProbeResponse = asyncio.run(collect_responses(probe.path))
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            responses = error
+        return _build_probe_diagnostics(probe, responses, response_types=response_types)
 
-    def run(
-        self,
-        request: TruncationProbeRequest,
-    ) -> TruncationProbeDiagnostics:
-        with build_truncation_probe_audio(
-            request.audio_path,
-            request.assessment,
-        ) as probe:
-            try:
-                responses: ProbeResponse = asyncio.run(
-                    self._collect_responses(probe.path)
-                )
-            except Exception as error:  # pylint: disable=broad-exception-caught
-                responses = error
-            return self._build_diagnostics(probe, responses)
 
-    def _build_diagnostics(
-        self,
-        probe: TruncationProbeAudio,
-        responses: ProbeResponse,
-    ) -> TruncationProbeDiagnostics:
-        if isinstance(responses, BaseException):
-            return TruncationProbeDiagnostics(
-                start_ms=probe.start_ms,
-                end_ms=probe.end_ms,
-                text="",
-                confirmed_speech=False,
-                error=str(responses),
-            )
-        response_summary = build_doubao_response_summary(
-            responses,
-            final_response_type=self._response_types.FINAL_RESULT,
-            error_response_type=self._response_types.ERROR,
-            terminal_response_type=self._response_types.SESSION_FINISHED,
-        )
-        error = None
-        if not response_summary.is_complete:
-            error = DOUBAO_RESPONSE_ERROR.format(path=probe.path)
+def _build_probe_diagnostics(
+    probe: TruncationProbeAudio,
+    responses: ProbeResponse,
+    *,
+    response_types: ProbeResponseTypes,
+) -> TruncationProbeDiagnostics:
+    if isinstance(responses, BaseException):
         return TruncationProbeDiagnostics(
             start_ms=probe.start_ms,
             end_ms=probe.end_ms,
-            text=response_summary.text,
-            confirmed_speech=contains_transcribable_text(response_summary.text),
-            error=error,
+            text="",
+            confirmed_speech=False,
+            error=str(responses),
         )
+    response_summary = build_doubao_response_summary(
+        responses,
+        final_response_type=response_types.FINAL_RESULT,
+        error_response_type=response_types.ERROR,
+        terminal_response_type=response_types.SESSION_FINISHED,
+    )
+    error = None
+    if not response_summary.is_complete:
+        error = DOUBAO_RESPONSE_ERROR.format(path=probe.path)
+    return TruncationProbeDiagnostics(
+        start_ms=probe.start_ms,
+        end_ms=probe.end_ms,
+        text=response_summary.text,
+        confirmed_speech=contains_transcribable_text(response_summary.text),
+        error=error,
+    )
 
 
 def log_truncation_probe_result(

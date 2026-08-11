@@ -13,7 +13,9 @@ from podcast_job_finder.audio.segmentation.vad import VadConfig
 from podcast_job_finder.transcription.backends.doubao.config import (
     DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
     DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
-    DoubaoTranscriberConfig,
+    DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD,
+    DOUBAO_MODEL_NAME,
+    DOUBAO_PROTOCOL_VERSION,
 )
 from podcast_job_finder.transcription.backends.doubao.transcriber import (
     DoubaoAudioTranscriber,
@@ -26,6 +28,11 @@ from podcast_job_finder.transcription.backends.firered.config import (
     DEFAULT_ORT_PROVIDER,
 )
 from podcast_job_finder.transcription.models import AudioTranscriptionRuntime
+from podcast_job_finder.transcription.diagnostics import (
+    LOW_CHARACTER_CONFIDENCE_THRESHOLD,
+    MAX_UNCOVERED_SPEECH_MS,
+    MIN_SPEECH_COVERAGE_RATIO,
+)
 from podcast_job_finder.transcription.runtime_environment import (
     FIRERED_ASR_MODEL_DIR_ENV,
     FIRERED_ASR_MODEL_RELATIVE_PATH,
@@ -64,20 +71,24 @@ def load_doubao_transcription_runtime(
             DEFAULT_ORT_INTRA_OP_THREADS,
         ),
     )
-    transcriber_config = DoubaoTranscriberConfig(
-        max_in_flight_requests=load_integer_env(
-            DOUBAO_MAX_IN_FLIGHT_REQUESTS_ENV,
-            DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
-        ),
-        request_interval_seconds=load_float_env(
-            DOUBAO_REQUEST_INTERVAL_ENV,
-            DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
-        ),
-        silence_padding_ms=silence_padding_ms,
-        vad_threshold=vad_config.threshold,
+    max_in_flight_requests = load_integer_env(
+        DOUBAO_MAX_IN_FLIGHT_REQUESTS_ENV,
+        DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
+    )
+    request_interval_seconds = load_float_env(
+        DOUBAO_REQUEST_INTERVAL_ENV,
+        DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
     )
     metadata = {
-        **transcriber_config.metadata(),
+        "transcription_backend": DOUBAO_BACKEND,
+        "model": DOUBAO_MODEL_NAME,
+        "protocol_version": DOUBAO_PROTOCOL_VERSION,
+        "max_uncovered_speech_ms": MAX_UNCOVERED_SPEECH_MS,
+        "min_speech_coverage_ratio": MIN_SPEECH_COVERAGE_RATIO,
+        "low_character_confidence_threshold": LOW_CHARACTER_CONFIDENCE_THRESHOLD,
+        "missing_final_segment_threshold": DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD,
+        "max_in_flight_requests": max_in_flight_requests,
+        "request_interval_seconds": request_interval_seconds,
         **aligner.metadata(),
         "max_input_audio_duration_ms": DOUBAO_MAX_INPUT_AUDIO_DURATION_MS,
         "min_speech_duration_ms": vad_config.min_speech_duration_ms,
@@ -87,8 +98,11 @@ def load_doubao_transcription_runtime(
     }
     return AudioTranscriptionRuntime(
         transcriber=DoubaoAudioTranscriber(
-            transcriber_config,
             aligner=aligner,
+            max_in_flight_requests=max_in_flight_requests,
+            request_interval_seconds=request_interval_seconds,
+            silence_padding_ms=silence_padding_ms,
+            vad_threshold=vad_config.threshold,
         ),
         metadata=metadata,
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,

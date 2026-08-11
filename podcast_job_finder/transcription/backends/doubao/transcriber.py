@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import deque
 from concurrent.futures import Future
@@ -38,12 +39,18 @@ from podcast_job_finder.transcription.diagnostics import (
 from podcast_job_finder.transcription.quality import (
     assess_transcription_coverage,
 )
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    DEFAULT_SILENCE_PADDING_MS,
+)
+from podcast_job_finder.audio.segmentation.vad import DEFAULT_VAD_THRESHOLD
 
 from .client import build_doubao_client
 from .config import (
+    DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
+    DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
+    DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD,
     DOUBAO_RESPONSE_MAX_ATTEMPTS,
     DOUBAO_RETRY_BASE_DELAY_SECONDS,
-    DoubaoTranscriberConfig,
 )
 from .output import build_doubao_transcription_output
 from .request_client import (
@@ -59,10 +66,10 @@ from .response import (
     build_doubao_response_summary,
 )
 from .truncation_probe import (
-    DoubaoTruncationProbeRunner,
     TruncationProbeRequest,
     log_truncation_probe_result,
     probe_requires_full_retry,
+    run_doubao_truncation_probe,
 )
 
 
@@ -126,15 +133,29 @@ class _PendingRequest:
 class DoubaoAudioTranscriber:
     """负责请求豆包、检查结果，并整理出带时间信息的文字。"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments
         self,
-        config: DoubaoTranscriberConfig,
         *,
         aligner: FireRedTextAlignmentClient,
+        max_in_flight_requests: int = DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
+        request_interval_seconds: float = DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS,
+        silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
+        vad_threshold: float = DEFAULT_VAD_THRESHOLD,
     ) -> None:
         """创建转写器及其所需的辅助组件。"""
 
-        self._config = config
+        if max_in_flight_requests <= 0:
+            raise ValueError("DOUBAO_ASR_MAX_IN_FLIGHT_REQUESTS 必须大于 0。")
+        if not math.isfinite(request_interval_seconds) or request_interval_seconds <= 0:
+            raise ValueError("request_interval_seconds 必须是大于 0 的有限数值。")
+        if silence_padding_ms < 0:
+            raise ValueError("silence_padding_ms 必须大于等于 0。")
+        if not 0 < vad_threshold < 1:
+            raise ValueError("vad_threshold 必须大于 0 且小于 1。")
+
+        self._max_in_flight_requests = max_in_flight_requests
+        self._silence_padding_ms = silence_padding_ms
+        self._vad_threshold = vad_threshold
         self._service_error_segment_paths: set[Path] = set()
         self._aligner = aligner
 
@@ -147,21 +168,15 @@ class DoubaoAudioTranscriber:
         self._request_client = DoubaoRequestClient(
             asr_config=asr_config,
             transcribe_stream=transcribe_stream,
-            max_in_flight_requests=config.max_in_flight_requests,
-            request_interval_seconds=config.request_interval_seconds,
-        )
-
-        # 初次结果里可能有一段人声没有对应文字时，单独识别那段音频进行确认。
-        self._probe_runner = DoubaoTruncationProbeRunner(
-            collect_responses=self._request_client.collect_probe_responses,
-            response_types=self._response_type,
+            max_in_flight_requests=max_in_flight_requests,
+            request_interval_seconds=request_interval_seconds,
         )
 
     @property
     def batch_size(self) -> int:
         """告诉上层一次最多可以同时等待多少个豆包请求。"""
 
-        return self._config.max_in_flight_requests
+        return self._max_in_flight_requests
 
     def transcribe(
         self,
@@ -221,7 +236,7 @@ class DoubaoAudioTranscriber:
             pending_requests.append(_PendingRequest(segment, future))
 
             # 队列未达到上限时继续提交，达到上限后才取出最早的请求。
-            if len(pending_requests) < self._config.max_in_flight_requests:
+            if len(pending_requests) < self._max_in_flight_requests:
                 continue
 
             item, current_previous, error = self._consume_pending_request(
@@ -345,11 +360,13 @@ class DoubaoAudioTranscriber:
             return attempts
 
         # 单独识别没有对应文字的那段音频，确认那里是否真的有人说话。
-        attempts.probe = self._probe_runner.run(
+        attempts.probe = run_doubao_truncation_probe(
             TruncationProbeRequest(
                 audio_path=segment.file_path,
                 assessment=latest_attempt.assessment,
-            )
+            ),
+            collect_responses=self._request_client.collect_probe_responses,
+            response_types=self._response_type,
         )
         log_truncation_probe_result(
             segment_index=segment.index,
@@ -463,7 +480,7 @@ class DoubaoAudioTranscriber:
             selected.alignments,
             segment=segment,
             previous_segment=previous_segment,
-            silence_padding_ms=self._config.silence_padding_ms,
+            silence_padding_ms=self._silence_padding_ms,
             diagnostics=diagnostics,
         )
 
@@ -509,7 +526,7 @@ class DoubaoAudioTranscriber:
 
         self._service_error_segment_paths.add(segment.file_path)
         segment_count = len(self._service_error_segment_paths)
-        threshold = self._config.missing_final_segment_threshold
+        threshold = DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD
         logger.warning(
             "豆包服务或协议异常片段：index=%d service_error_segments=%d "
             "threshold=%d path=%s reason=%s",
@@ -570,8 +587,8 @@ class DoubaoAudioTranscriber:
             alignments,
             has_transcript=bool(response_summary.text),
             speech_segment=segment.segment,
-            silence_padding_ms=self._config.silence_padding_ms,
-            vad_threshold=self._config.vad_threshold,
+            silence_padding_ms=self._silence_padding_ms,
+            vad_threshold=self._vad_threshold,
         )
         return _AttemptResult(
             attempt=attempt,
