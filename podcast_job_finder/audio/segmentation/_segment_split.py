@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import ceil, inf
+from math import inf
 from typing import Final
 
 import numpy as np
 from numpy.typing import NDArray
 
+from podcast_job_finder.audio.segmentation._pcm import milliseconds_to_frames
 from podcast_job_finder.audio.segmentation._segment_candidates import (
     BoundarySearchConfig,
     SegmentBoundary,
@@ -96,7 +97,7 @@ def _calculate_boundary_losses(
     else:
         min_energy = max_energy = 0.0
 
-    full_silence_frames = _milliseconds_to_frames(
+    full_silence_frames = milliseconds_to_frames(
         FULL_SILENCE_DURATION_MS,
         sample_rate=sample_rate,
         frame_samples=config.frame_samples,
@@ -251,12 +252,3 @@ def _build_segments(
         end_frame = boundaries[end_index].previous_end_frame
         segments.append((start_frame, end_frame))
     return segments
-
-
-def _milliseconds_to_frames(
-    duration_ms: int,
-    *,
-    sample_rate: int,
-    frame_samples: int,
-) -> int:
-    return max(1, ceil(duration_ms * sample_rate / (1_000 * frame_samples)))

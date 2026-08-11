@@ -7,6 +7,7 @@ from typing import Final
 import numpy as np
 from numpy.typing import NDArray
 
+from podcast_job_finder.audio.segmentation._pcm import milliseconds_to_frames
 from podcast_job_finder.audio.segmentation.normalized_audio import NormalizedAudio
 
 
@@ -64,14 +65,14 @@ def build_silence_candidates(
     """
     # 配置中的停顿长度使用毫秒表示。这里把它换算成当前音频使用的时间格数，
     # 方便与 start_frame、end_frame 直接比较。
-    min_silence_frames = _milliseconds_to_frames(
+    min_silence_frames = milliseconds_to_frames(
         MIN_SILENCE_DURATION_MS,
         sample_rate=audio.sample_rate,
         frame_samples=frame_samples,
     )
 
     # 检查停顿时，还要查看它前和后一小段声音。这个值表示需要向两边查看多少毫秒的音频。
-    energy_context_frames = _milliseconds_to_frames(
+    energy_context_frames = milliseconds_to_frames(
         SILENCE_ENERGY_CONTEXT_DURATION_MS,
         sample_rate=audio.sample_rate,
         frame_samples=frame_samples,
@@ -384,12 +385,3 @@ def _find_quietest_cut_frame(
         key=lambda offset: abs(offset - middle_offset),
     )
     return interval.start_frame + quietest_offset + 1
-
-
-def _milliseconds_to_frames(
-    duration_ms: int,
-    *,
-    sample_rate: int,
-    frame_samples: int,
-) -> int:
-    return max(1, ceil(duration_ms * sample_rate / (1_000 * frame_samples)))
