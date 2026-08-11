@@ -38,7 +38,7 @@ from podcast_job_finder.companies.pipeline import (
     run_batch_episode_pipeline,
 )
 from podcast_job_finder.companies.rate_limit import (
-    load_pipeline_rate_config_from_env,
+    load_episode_page_fetch_rate_from_env,
 )
 from podcast_job_finder.companies.reporting import FeedReportData, save_feed_reports
 from podcast_job_finder.companies.runtime import (
@@ -203,7 +203,7 @@ def _run_feed_page_mode(feed: RssFeed, work_items: Sequence[EpisodeWorkItem]) ->
         work_items=work_items,
         runtime=extraction_runtime,
         checkpoint_store=LlmCheckpointStore(),
-        rate_config=load_pipeline_rate_config_from_env(),
+        page_fetch_rate_per_minute=load_episode_page_fetch_rate_from_env(),
     )
     output_path, summary_path = save_feed_reports(
         FeedReportData(

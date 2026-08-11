@@ -21,9 +21,6 @@ from podcast_job_finder.companies.page_loader import (
     EpisodePageLoaderProtocol,
     RateLimitedEpisodePageLoader,
 )
-from podcast_job_finder.companies.rate_limit import (
-    PipelineRateConfig,
-)
 from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     OpenAiCompatibleConfigError,
@@ -99,13 +96,12 @@ def run_batch_episode_pipeline(
     work_items: Sequence[EpisodeWorkItem],
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
-    rate_config: PipelineRateConfig,
+    page_fetch_rate_per_minute: float | None,
 ) -> BatchEpisodePipelineResult:
     logger.info(
-        "启动节目流水线：总数=%d 单集页面请求速率=%s 页面公司提取 LLM 速率=%s",
+        "启动节目流水线：总数=%d 单集页面请求速率=%s",
         len(work_items),
-        format_rate(rate_config.producer_rate_per_minute),
-        format_rate(rate_config.consumer_rate_per_minute),
+        format_rate(page_fetch_rate_per_minute),
     )
     shared_state = _PipelineSharedState(
         checkpoint_store=checkpoint_store,
@@ -116,7 +112,7 @@ def run_batch_episode_pipeline(
     _run_pipeline_workers(
         work_items=work_items,
         runtime=runtime,
-        rate_config=rate_config,
+        page_fetch_rate_per_minute=page_fetch_rate_per_minute,
         shared_state=shared_state,
     )
     return _build_pipeline_result(shared_state)
@@ -126,12 +122,12 @@ def _run_pipeline_workers(
     *,
     work_items: Sequence[EpisodeWorkItem],
     runtime: EpisodeExtractionRuntime,
-    rate_config: PipelineRateConfig,
+    page_fetch_rate_per_minute: float | None,
     shared_state: _PipelineSharedState,
 ) -> None:
     page_loader = RateLimitedEpisodePageLoader(
         DEFAULT_EPISODE_PAGE_LOADER,
-        rate_config.producer_rate_per_minute,
+        page_fetch_rate_per_minute,
     )
     producer_thread = threading.Thread(
         name=PRODUCER_THREAD_NAME,
