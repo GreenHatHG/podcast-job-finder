@@ -13,10 +13,6 @@ from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
     ExportedSpeechSegment,
-    VadConfig,
-)
-from podcast_job_finder.audio.segmentation.speech_pipeline import (
-    DEFAULT_SILENCE_PADDING_MS,
 )
 from podcast_job_finder.transcription.schedule import (
     DEFAULT_AUDIO_PROCESSING_MODE,
@@ -28,7 +24,6 @@ from podcast_job_finder.audio.segmentation.speech_segment_checkpoint import (
     restore_or_export_speech_segments,
 )
 from podcast_job_finder.audio.segmentation.segment_export import (
-    SegmentAudioFormat,
     SpeechSegmentExportConfig,
 )
 from podcast_job_finder.transcription.models import (
@@ -99,20 +94,6 @@ class BatchAudioTranscriptionError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class BatchAudioTranscriptionRuntime:
-    transcription: AudioTranscriptionRuntime
-    vad_config: VadConfig = VadConfig()
-    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
-
-    @property
-    def segment_audio_format(self) -> SegmentAudioFormat:
-        return self.transcription.segment_audio_format
-
-    def close(self) -> None:
-        self.transcription.close()
-
-
-@dataclass(slots=True, frozen=True)
 class BatchAudioTranscriptionResult:
     episode_results: list[dict[str, object]]
     success_count: int
@@ -169,7 +150,7 @@ def _build_segment_checkpoint_store(
 def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
     *,
     work_items: Sequence[EpisodeWorkItem],
-    runtime: BatchAudioTranscriptionRuntime,
+    runtime: AudioTranscriptionRuntime,
     audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
     processing_mode: AudioProcessingMode = DEFAULT_AUDIO_PROCESSING_MODE,
     resume: bool = False,
@@ -211,7 +192,7 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
 def save_batch_audio_transcription_report(
     *,
     feed_id: str,
-    runtime: BatchAudioTranscriptionRuntime,
+    runtime: AudioTranscriptionRuntime,
     result: BatchAudioTranscriptionResult,
     output_dir: Path,
 ) -> Path:
@@ -223,7 +204,7 @@ def save_batch_audio_transcription_report(
     report = {
         "feed_id": feed_id,
         "source": "audio",
-        **runtime.transcription.metadata,
+        **runtime.metadata,
         "segment_audio_format": runtime.segment_audio_format,
         "created_at": timestamp.text,
         "total": len(result.episode_results),
@@ -301,7 +282,7 @@ def _build_episode_context(
 def _transcribe_prepared_episode(
     prepared_episode: _DownloadedEpisodeAudio | dict[str, object],
     *,
-    runtime: BatchAudioTranscriptionRuntime,
+    runtime: AudioTranscriptionRuntime,
     resume: bool,
 ) -> dict[str, object]:
     if isinstance(prepared_episode, dict):
@@ -351,13 +332,13 @@ def _transcribe_prepared_episode(
 def _transcribe_segments_with_checkpoints(
     exported_segments: Sequence[ExportedSpeechSegment],
     *,
-    runtime: BatchAudioTranscriptionRuntime,
+    runtime: AudioTranscriptionRuntime,
     checkpoint_store: SegmentTranscriptionCheckpointStore,
     resume: bool,
 ) -> tuple[AudioTranscriptionResult, bool]:
     result, all_segments_cached = transcribe_speech_segments_with_checkpoints(
         exported_segments,
-        transcriber=runtime.transcription.transcriber,
+        transcriber=runtime.transcriber,
         checkpoint_store=checkpoint_store,
         resume=resume,
     )
@@ -508,7 +489,7 @@ def _is_non_empty_file(path: Path) -> bool:
 def _save_episode_transcription(  # pylint: disable=too-many-arguments
     prepared_episode: _DownloadedEpisodeAudio,
     *,
-    runtime: BatchAudioTranscriptionRuntime,
+    runtime: AudioTranscriptionRuntime,
     result: AudioTranscriptionResult,
     exported_segments: Sequence[ExportedSpeechSegment],
 ) -> None:
@@ -530,7 +511,7 @@ def _save_episode_transcription(  # pylint: disable=too-many-arguments
             "title": context.work_item.title,
             "pub_date": context.work_item.pub_date,
             "episode_url": context.work_item.episode_url,
-            **runtime.transcription.metadata,
+            **runtime.metadata,
             "segment_audio_format": runtime.segment_audio_format,
             "audio_path": str(prepared_episode.local_path),
             "source_url": prepared_episode.source_url,

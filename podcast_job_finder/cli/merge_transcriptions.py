@@ -20,7 +20,7 @@ from podcast_job_finder.transcription.formatting.input import (
 )
 from podcast_job_finder.llm import (
     OpenAiCompatibleConfigError,
-    load_transcription_formatting_llm_runtime_config_from_env,
+    load_transcription_formatting_llm_runtime_from_env,
 )
 from podcast_job_finder.logging import configure_logging
 
@@ -32,14 +32,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging()
     args = _build_argument_parser().parse_args(argv)
     try:
-        formatting_runtime = load_transcription_formatting_llm_runtime_config_from_env()
-        formatting_client = formatting_runtime.build_client()
+        formatting_runtime = load_transcription_formatting_llm_runtime_from_env()
         loaded_input = load_transcription_inputs(args.inputs)
         output_path = args.output or _build_default_output_path(loaded_input.json_paths)
         title = args.title or loaded_input.title
         formatted_article = format_transcription_segments(
             loaded_input.segments,
-            llm_client=formatting_client,
+            llm_client=formatting_runtime.client,
             retry_config=formatting_runtime.retry_config,
         )
         save_transcription_article(
@@ -58,7 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     result = {
         "article_path": str(output_path),
-        "model": formatting_runtime.client_config.model,
+        "model": formatting_runtime.model,
         "input_file_count": len(loaded_input.json_paths),
         "segment_count": len(loaded_input.segments),
         "formatting": formatted_article.to_machine_audit_dict(),

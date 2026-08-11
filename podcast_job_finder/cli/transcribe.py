@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.llm import (
-    LlmRuntimeConfig,
+    LlmRuntime,
     OpenAiCompatibleConfigError,
-    load_transcription_formatting_llm_runtime_config_from_env,
+    load_transcription_formatting_llm_runtime_from_env,
 )
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio import (
@@ -30,9 +30,6 @@ from podcast_job_finder.audio.segmentation.segment_export import (
     SegmentAudioFormat,
     SpeechSegmentExportConfig,
     parse_segment_audio_format,
-)
-from podcast_job_finder.audio.segmentation.speech_pipeline import (
-    DEFAULT_SILENCE_PADDING_MS,
 )
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
@@ -109,7 +106,7 @@ def _run_transcription(
     args: argparse.Namespace,
     transcription_runtime: AudioTranscriptionRuntime,
 ) -> dict[str, object]:
-    formatting_runtime = load_transcription_formatting_llm_runtime_config_from_env()
+    formatting_runtime = load_transcription_formatting_llm_runtime_from_env()
     segment_audio_format = _resolve_segment_audio_format(
         args.segment_audio_format,
         transcription_runtime=transcription_runtime,
@@ -126,7 +123,7 @@ def _run_transcription(
         checkpoint_path=args.output_dir / SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
         vad_config=vad_config,
         export_config=SpeechSegmentExportConfig(
-            silence_padding_ms=DEFAULT_SILENCE_PADDING_MS,
+            silence_padding_ms=transcription_runtime.silence_padding_ms,
             audio_format=segment_audio_format,
             overwrite=True,
         ),
@@ -182,11 +179,11 @@ def _format_transcription(
     args: argparse.Namespace,
     segments: Sequence[TranscribedSpeechSegment],
     *,
-    formatting_runtime: LlmRuntimeConfig,
+    formatting_runtime: LlmRuntime,
 ) -> dict[str, object]:
     formatted_article = format_transcription_segments(
         segments,
-        llm_client=formatting_runtime.build_client(),
+        llm_client=formatting_runtime.client,
         retry_config=formatting_runtime.retry_config,
     )
     formatted_article_path = args.output_dir / FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME
@@ -196,9 +193,9 @@ def _format_transcription(
         body=formatted_article.text,
     )
     return {
-        "formatting_model": formatting_runtime.client_config.model,
-        "formatting_base_url": formatting_runtime.client_config.base_url,
-        "formatting_api_style": formatting_runtime.client_config.api_style,
+        "formatting_model": formatting_runtime.model,
+        "formatting_base_url": formatting_runtime.base_url,
+        "formatting_api_style": formatting_runtime.api_style,
         "formatted_article_path": str(formatted_article_path),
         "formatting": formatted_article.to_machine_audit_dict(),
     }

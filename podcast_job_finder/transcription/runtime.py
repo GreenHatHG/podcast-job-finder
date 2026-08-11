@@ -40,7 +40,7 @@ from podcast_job_finder.transcription.models import AudioTranscriberProtocol
 from podcast_job_finder.audio.segmentation.vad import VadConfig
 from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
-    load_audio_transcription_llm_runtime_config_from_env,
+    load_audio_transcription_llm_runtime_from_env,
 )
 
 
@@ -83,6 +83,7 @@ class AudioTranscriptionRuntime:
     metadata: Mapping[str, object]
     segment_audio_format: SegmentAudioFormat
     vad_config: VadConfig = VadConfig()
+    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
 
     def close(self) -> None:
         self.transcriber.close()
@@ -96,7 +97,7 @@ def load_audio_transcription_runtime_from_env(
         os.environ.get(AUDIO_TRANSCRIPTION_BACKEND_ENV, LLM_BACKEND).strip().lower()
     )
     if backend == LLM_BACKEND:
-        return _load_llm_runtime()
+        return _load_llm_runtime(silence_padding_ms=silence_padding_ms)
     if backend == FIRERED_BACKEND:
         return _load_firered_runtime(silence_padding_ms=silence_padding_ms)
     if backend == DOUBAO_BACKEND:
@@ -104,22 +105,22 @@ def load_audio_transcription_runtime_from_env(
     raise AudioTranscriptionConfigError(INVALID_BACKEND_ERROR.format(backend=backend))
 
 
-def _load_llm_runtime() -> AudioTranscriptionRuntime:
-    runtime = load_audio_transcription_llm_runtime_config_from_env()
-    config = runtime.client_config
+def _load_llm_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntime:
+    runtime = load_audio_transcription_llm_runtime_from_env()
     metadata = {
         "transcription_backend": LLM_BACKEND,
-        "model": config.model,
-        "base_url": config.base_url,
-        "api_style": config.api_style,
+        "model": runtime.model,
+        "base_url": runtime.base_url,
+        "api_style": runtime.api_style,
     }
     return AudioTranscriptionRuntime(
         transcriber=LlmAudioTranscriber(
-            runtime.build_client(),
+            runtime.client,
             retry_config=runtime.retry_config,
         ),
         metadata=metadata,
         segment_audio_format=MP3_SEGMENT_AUDIO_FORMAT,
+        silence_padding_ms=silence_padding_ms,
     )
 
 
@@ -145,6 +146,7 @@ def _load_firered_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRunti
         transcriber=FireRedAudioTranscriber(config),
         metadata=config.metadata(),
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
+        silence_padding_ms=silence_padding_ms,
     )
 
 
@@ -190,6 +192,7 @@ def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntim
         metadata=metadata,
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
         vad_config=vad_config,
+        silence_padding_ms=silence_padding_ms,
     )
 
 

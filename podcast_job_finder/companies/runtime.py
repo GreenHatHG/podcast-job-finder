@@ -11,7 +11,7 @@ from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
     AUDIO_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
     PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
-    load_llm_runtime_config_from_env,
+    load_llm_runtime_from_env,
 )
 
 
@@ -28,20 +28,19 @@ def load_audio_extraction_runtime_from_env() -> EpisodeExtractionRuntime:
 
 
 def _load_extraction_runtime_from_env(env_prefix: str) -> EpisodeExtractionRuntime:
-    llm_runtime = load_llm_runtime_config_from_env(env_prefix)
-    llm_config = llm_runtime.client_config
+    llm_runtime = load_llm_runtime_from_env(env_prefix)
     company_blacklist = _load_company_blacklist()
     return EpisodeExtractionRuntime(
-        llm_client=llm_runtime.build_client(),
+        llm_client=llm_runtime.client,
         retry_config=llm_runtime.retry_config,
         company_blacklist=company_blacklist,
-        model=llm_config.model,
-        base_url=llm_config.base_url,
-        api_style=llm_config.api_style,
+        model=llm_runtime.model,
+        base_url=llm_runtime.base_url,
+        api_style=llm_runtime.api_style,
         runtime_signature=build_runtime_signature(
-            model=llm_config.model,
-            base_url=llm_config.base_url,
-            api_style=llm_config.api_style,
+            model=llm_runtime.model,
+            base_url=llm_runtime.base_url,
+            api_style=llm_runtime.api_style,
             company_blacklist=company_blacklist,
         ),
     )

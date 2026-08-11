@@ -7,7 +7,6 @@ from podcast_job_finder.llm.client import OpenAiCompatibleLlmClient
 from podcast_job_finder.llm.config import (
     API_STYLE_ENV_SUFFIX,
     CHAT_COMPLETIONS_API_STYLE,
-    OpenAiCompatibleConfig,
     build_llm_env_name,
     load_openai_compatible_config_from_env,
 )
@@ -36,29 +35,33 @@ AUDIO_TRANSCRIPTION_API_STYLE_ERROR_TEMPLATE: Final = (
 
 
 @dataclass(slots=True, frozen=True)
-class LlmRuntimeConfig:
-    client_config: OpenAiCompatibleConfig
+class LlmRuntime:
+    client: RateLimitedLlmClient
     retry_config: LlmRetryConfig
-    rate_per_minute: float | None
-
-    def build_client(self) -> RateLimitedLlmClient:
-        return RateLimitedLlmClient(
-            OpenAiCompatibleLlmClient(self.client_config),
-            self.rate_per_minute,
-        )
+    model: str
+    base_url: str | None
+    api_style: str
 
 
-def load_llm_runtime_config_from_env(env_prefix: str) -> LlmRuntimeConfig:
-    return LlmRuntimeConfig(
-        client_config=load_openai_compatible_config_from_env(env_prefix),
-        retry_config=load_llm_retry_config_from_env(env_prefix),
-        rate_per_minute=load_llm_rate_from_env(env_prefix),
+def load_llm_runtime_from_env(env_prefix: str) -> LlmRuntime:
+    client_config = load_openai_compatible_config_from_env(env_prefix)
+    retry_config = load_llm_retry_config_from_env(env_prefix)
+    rate_per_minute = load_llm_rate_from_env(env_prefix)
+    return LlmRuntime(
+        client=RateLimitedLlmClient(
+            OpenAiCompatibleLlmClient(client_config),
+            rate_per_minute,
+        ),
+        retry_config=retry_config,
+        model=client_config.model,
+        base_url=client_config.base_url,
+        api_style=client_config.api_style,
     )
 
 
-def load_audio_transcription_llm_runtime_config_from_env() -> LlmRuntimeConfig:
-    runtime = load_llm_runtime_config_from_env(AUDIO_TRANSCRIPTION_LLM_ENV_PREFIX)
-    if runtime.client_config.api_style != CHAT_COMPLETIONS_API_STYLE:
+def load_audio_transcription_llm_runtime_from_env() -> LlmRuntime:
+    runtime = load_llm_runtime_from_env(AUDIO_TRANSCRIPTION_LLM_ENV_PREFIX)
+    if runtime.api_style != CHAT_COMPLETIONS_API_STYLE:
         raise OpenAiCompatibleConfigError(
             AUDIO_TRANSCRIPTION_API_STYLE_ERROR_TEMPLATE.format(
                 env_name=AUDIO_TRANSCRIPTION_API_STYLE_ENV
@@ -67,5 +70,5 @@ def load_audio_transcription_llm_runtime_config_from_env() -> LlmRuntimeConfig:
     return runtime
 
 
-def load_transcription_formatting_llm_runtime_config_from_env() -> LlmRuntimeConfig:
-    return load_llm_runtime_config_from_env(TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX)
+def load_transcription_formatting_llm_runtime_from_env() -> LlmRuntime:
+    return load_llm_runtime_from_env(TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX)

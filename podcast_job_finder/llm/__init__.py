@@ -20,12 +20,12 @@ from podcast_job_finder.llm.retry import (
 from podcast_job_finder.llm.runtime import (
     AUDIO_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
     AUDIO_TRANSCRIPTION_LLM_ENV_PREFIX,
-    LlmRuntimeConfig,
+    LlmRuntime,
     PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
     TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX,
-    load_audio_transcription_llm_runtime_config_from_env,
-    load_llm_runtime_config_from_env,
-    load_transcription_formatting_llm_runtime_config_from_env,
+    load_audio_transcription_llm_runtime_from_env,
+    load_llm_runtime_from_env,
+    load_transcription_formatting_llm_runtime_from_env,
 )
 
 
@@ -35,7 +35,7 @@ __all__ = [
     "AUDIO_TRANSCRIPTION_LLM_ENV_PREFIX",
     "EmptyLlmResponseError",
     "LlmRetryConfig",
-    "LlmRuntimeConfig",
+    "LlmRuntime",
     "LlmRetryExhaustedError",
     "OpenAiCompatibleConfig",
     "OpenAiCompatibleConfigError",
@@ -45,9 +45,9 @@ __all__ = [
     "TRANSCRIPTION_FORMATTING_LLM_ENV_PREFIX",
     "RetryableOpenAiCompatibleLlmError",
     "execute_llm_with_retry",
-    "load_audio_transcription_llm_runtime_config_from_env",
+    "load_audio_transcription_llm_runtime_from_env",
     "load_llm_retry_config_from_env",
-    "load_llm_runtime_config_from_env",
+    "load_llm_runtime_from_env",
     "load_openai_compatible_config_from_env",
-    "load_transcription_formatting_llm_runtime_config_from_env",
+    "load_transcription_formatting_llm_runtime_from_env",
 ]

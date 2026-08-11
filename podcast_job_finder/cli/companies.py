@@ -11,7 +11,6 @@ from podcast_job_finder.transcription.batch import (
     RESULT_STATUS_SUCCESS,
     BatchAudioTranscriptionError,
     BatchAudioTranscriptionResult,
-    BatchAudioTranscriptionRuntime,
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
 )
@@ -230,7 +229,7 @@ def _run_feed_audio_mode(
     processing_mode: AudioProcessingMode,
     resume: bool,
 ) -> int:
-    transcription_runtime = _load_audio_transcription_runtime()
+    transcription_runtime = load_audio_transcription_runtime_from_env()
     try:
         transcription_result = run_batch_audio_transcription(
             work_items=work_items,
@@ -327,14 +326,6 @@ def _run_audio_company_extraction(
     logger.info("音频公司提取结果已保存到 %s", output_path)
     logger.info("音频公司汇总已保存到 %s", summary_path)
     return 1 if extraction_result.fail_count > 0 else 0
-
-
-def _load_audio_transcription_runtime() -> BatchAudioTranscriptionRuntime:
-    transcription = load_audio_transcription_runtime_from_env()
-    return BatchAudioTranscriptionRuntime(
-        transcription=transcription,
-        vad_config=transcription.vad_config,
-    )
 
 
 def _run_single_episode_mode(episode_url: str) -> int:
