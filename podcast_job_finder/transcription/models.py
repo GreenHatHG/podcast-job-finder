@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterator, Protocol, Sequence, runtime_checkable
+from typing import Iterator, Mapping, Protocol, Sequence, runtime_checkable
 
-from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.segmentation.segment_export import (
+    ExportedSpeechSegment,
+    SegmentAudioFormat,
+)
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    DEFAULT_SILENCE_PADDING_MS,
+)
+from podcast_job_finder.audio.segmentation.vad import VadConfig
 from podcast_job_finder.transcription.diagnostics import (
     TranscriptionDiagnostics,
 )
@@ -83,6 +90,18 @@ class BatchAudioTranscriberProtocol(AudioTranscriberProtocol, Protocol):
         *,
         previous_segment: TranscribedSpeechSegment | None,
     ) -> Iterator[Sequence[TranscriptionSegmentResult]]: ...
+
+
+@dataclass(slots=True)
+class AudioTranscriptionRuntime:
+    transcriber: AudioTranscriberProtocol
+    metadata: Mapping[str, object]
+    segment_audio_format: SegmentAudioFormat
+    vad_config: VadConfig = VadConfig()
+    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
+
+    def close(self) -> None:
+        self.transcriber.close()
 
 
 @dataclass(slots=True, frozen=True)
