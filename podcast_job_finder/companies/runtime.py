@@ -3,16 +3,16 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from podcast_job_finder.companies.episode_runner import (
-    EpisodeExtractionRuntime,
-    build_runtime_signature,
-)
+from podcast_job_finder.companies.episode_runner import EpisodeExtractionRuntime
+from podcast_job_finder.companies.extraction import PROMPT_TEMPLATE
 from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
     AUDIO_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
+    LlmRuntime,
     PAGE_COMPANY_EXTRACTION_LLM_ENV_PREFIX,
     load_llm_runtime_from_env,
 )
+from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 
 
 COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"
@@ -33,10 +33,33 @@ def _load_extraction_runtime_from_env(env_prefix: str) -> EpisodeExtractionRunti
     return EpisodeExtractionRuntime(
         llm=llm_runtime,
         company_blacklist=company_blacklist,
-        runtime_signature=build_runtime_signature(
+        runtime_signature=_build_runtime_signature(
             llm=llm_runtime,
             company_blacklist=company_blacklist,
         ),
+    )
+
+
+def _build_runtime_signature(
+    *,
+    llm: LlmRuntime,
+    company_blacklist: tuple[str, ...],
+) -> str:
+    normalized_blacklist = sorted(
+        {
+            company_name.strip().casefold()
+            for company_name in company_blacklist
+            if company_name.strip()
+        }
+    )
+    return build_runtime_signature_hash(
+        {
+            "model": llm.model,
+            "base_url": llm.base_url,
+            "api_style": llm.api_style,
+            "company_blacklist": normalized_blacklist,
+            "prompt_template": PROMPT_TEMPLATE,
+        }
     )
 
 

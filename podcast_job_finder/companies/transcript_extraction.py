@@ -16,7 +16,6 @@ from podcast_job_finder.companies.candidate_merge import (
 )
 from podcast_job_finder.companies.episode_runner import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import (
-    build_company_extraction_input,
     build_company_extraction_prompt,
     normalize_company_mentions,
     run_company_extraction_from_prompt,
@@ -120,7 +119,7 @@ def _extract_transcript_chunk(
     context: _ExtractionExecutionContext,
 ) -> tuple[CompanyExtractionResult, bool]:
     episode = EpisodeInfo(title=title, content=chunk.text)
-    prompt = build_company_extraction_prompt(build_company_extraction_input(episode))
+    prompt = build_company_extraction_prompt(episode)
     return _run_cached_extraction(
         checkpoint_key=CHUNK_CHECKPOINT_KEY_TEMPLATE.format(index=chunk.index),
         prompt=prompt,

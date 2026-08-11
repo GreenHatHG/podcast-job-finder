@@ -77,7 +77,7 @@ COMPANY_EXTRACTION_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
 )
 
 
-def build_company_extraction_input(episode: EpisodeInfo) -> str:
+def build_company_extraction_prompt(episode: EpisodeInfo) -> str:
     sections = [
         TITLE_SECTION_LABEL,
         episode.title,
@@ -89,21 +89,14 @@ def build_company_extraction_input(episode: EpisodeInfo) -> str:
     ]
     if not episode.comments:
         sections.append(NO_COMMENTS_LABEL)
-        return "\n".join(sections)
-
-    comment_lines: list[str] = []
-    for comment_index, comment in enumerate(episode.comments, start=1):
-        comment_lines.extend(_comment_to_input_lines(comment, str(comment_index), 0))
-    sections.append("\n".join(comment_lines))
-    return "\n".join(sections)
-
-
-def build_company_extraction_prompt(episode_text: str) -> str:
-    return PROMPT_TEMPLATE.format(episode_text=episode_text)
-
-
-def get_company_extraction_prompt_template() -> str:
-    return PROMPT_TEMPLATE
+    else:
+        comment_lines: list[str] = []
+        for comment_index, comment in enumerate(episode.comments, start=1):
+            comment_lines.extend(
+                _comment_to_input_lines(comment, str(comment_index), 0)
+            )
+        sections.append("\n".join(comment_lines))
+    return PROMPT_TEMPLATE.format(episode_text="\n".join(sections))
 
 
 def parse_company_extraction_output(

@@ -4,9 +4,7 @@ import logging
 from dataclasses import dataclass, replace
 
 from podcast_job_finder.companies.extraction import (
-    build_company_extraction_input,
     build_company_extraction_prompt,
-    get_company_extraction_prompt_template,
     run_company_extraction_from_prompt,
 )
 from podcast_job_finder.companies.models import (
@@ -26,7 +24,6 @@ from podcast_job_finder.companies.checkpoint import (
 )
 from podcast_job_finder.llm import LlmRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
-from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 
 
 logger = logging.getLogger(__name__)
@@ -85,28 +82,6 @@ class _EpisodeCheckpointContext:
             episode_key=self.episode_key,
             prompt_text=prompt_text,
         )
-
-
-def build_runtime_signature(
-    *,
-    llm: LlmRuntime,
-    company_blacklist: tuple[str, ...],
-) -> str:
-    normalized_blacklist = sorted(
-        {
-            company_name.strip().casefold()
-            for company_name in company_blacklist
-            if company_name.strip()
-        }
-    )
-    signature_payload = {
-        "model": llm.model,
-        "base_url": llm.base_url,
-        "api_style": llm.api_style,
-        "company_blacklist": normalized_blacklist,
-        "prompt_template": get_company_extraction_prompt_template(),
-    }
-    return build_runtime_signature_hash(signature_payload)
 
 
 def run_episode_company_extraction(
@@ -226,9 +201,7 @@ def prepare_episode_llm_work(
 
     logger.info("抓取节目页面：%s", work_item.episode_url)
     episode = page_loader.load(work_item.episode_url)
-    prompt_text = build_company_extraction_prompt(
-        build_company_extraction_input(episode)
-    )
+    prompt_text = build_company_extraction_prompt(episode)
     title = _resolve_text(episode.title, work_item.title)
     prepared_work = checkpoint_context.build_prepared_work(
         title=title,
