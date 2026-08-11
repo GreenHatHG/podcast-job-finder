@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import IO, Final
 
 from podcast_job_finder.transcription.backends.firered.config import (
-    FireRedConfigError,
     FireRedProcessConfig,
 )
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
@@ -47,6 +46,10 @@ WORKER_EXIT_ERROR: Final = "FireRed 工作进程意外退出：returncode={retur
 WORKER_RESPONSE_ERROR: Final = "FireRed 工作进程返回无效结果：{message}"
 
 
+class FireRedConfigError(ValueError):
+    """FireRed 本地转写配置无效。"""
+
+
 class FireRedAudioTranscriber:
     def __init__(
         self,
@@ -56,8 +59,11 @@ class FireRedAudioTranscriber:
         punc_model_dir: Path,
         silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
     ) -> None:
+        _require_file(process_config.python_executable, "FIRERED_PYTHON")
         _require_model_files(asr_model_dir, REQUIRED_ASR_FILES)
         _require_model_files(punc_model_dir, REQUIRED_PUNC_FILES)
+        if process_config.ort_intra_op_threads <= 0:
+            raise FireRedConfigError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
         if silence_padding_ms < 0:
             raise FireRedConfigError("silence_padding_ms 必须大于等于 0。")
         self._process_config = process_config
@@ -290,6 +296,11 @@ def _to_source_timestamp(
         segment.segment.end_ms,
         segment.segment.start_ms + relative_timestamp,
     )
+
+
+def _require_file(path: Path, field_name: str) -> None:
+    if not path.is_file():
+        raise FireRedConfigError(f"{field_name} 指向的文件不存在：{path}")
 
 
 def _require_model_files(model_dir: Path, relative_paths: tuple[str, ...]) -> None:

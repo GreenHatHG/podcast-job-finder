@@ -35,7 +35,10 @@ class FireRedTextAlignmentClient:
         process_config: FireRedProcessConfig,
         asr_model_dir: Path,
     ) -> None:
+        _require_file(process_config.python_executable, "FIRERED_PYTHON")
         _require_model_files(asr_model_dir)
+        if process_config.ort_intra_op_threads <= 0:
+            raise ValueError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
         self._process_config = process_config
         self._asr_model_dir = asr_model_dir
         self._process: subprocess.Popen[str] | None = None
@@ -174,6 +177,11 @@ def _read_response(process: subprocess.Popen[str]) -> dict[str, object]:
     if not isinstance(response, dict):
         raise AudioTranscriptionError(WORKER_ERROR.format(message=response))
     return response
+
+
+def _require_file(path: Path, field_name: str) -> None:
+    if not path.is_file():
+        raise ValueError(f"{field_name} 指向的文件不存在：{path}")
 
 
 def _require_model_files(model_dir: Path) -> None:
