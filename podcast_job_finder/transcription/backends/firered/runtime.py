@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Final
 
 from podcast_job_finder.audio.segmentation.segment_export import (
     WAV_SEGMENT_AUDIO_FORMAT,
@@ -28,6 +29,9 @@ from podcast_job_finder.transcription.runtime_environment import (
     load_integer_env,
     load_optional_path_env,
 )
+
+
+FIRERED_BACKEND: Final = "firered"
 
 
 def load_firered_transcription_runtime(

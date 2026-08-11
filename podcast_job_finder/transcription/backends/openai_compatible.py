@@ -5,10 +5,15 @@ from typing import Final, Protocol
 
 from podcast_job_finder.audio.segmentation.segment_export import (
     ExportedSpeechSegment,
+    MP3_SEGMENT_AUDIO_FORMAT,
     get_segment_audio_format,
+)
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    DEFAULT_SILENCE_PADDING_MS,
 )
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
+    AudioTranscriptionRuntime,
     TranscribedSpeechSegment,
     TranscriptionOutput,
 )
@@ -19,10 +24,12 @@ from podcast_job_finder.llm import (
     LlmRetryExhaustedError,
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
+    load_audio_transcription_llm_runtime_from_env,
 )
 
 
 PREVIOUS_CONTEXT_MAX_CHARS: Final = 200
+LLM_BACKEND: Final = "llm"
 NO_PREVIOUS_CONTEXT_TEXT: Final = "无"
 TRANSCRIPTION_PROMPT_TEMPLATE: Final = """你是专业的中文音频转写助手。
 
@@ -103,6 +110,27 @@ class LlmAudioTranscriber:
 
     def close(self) -> None:
         return
+
+
+def load_llm_transcription_runtime(
+    *,
+    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
+) -> AudioTranscriptionRuntime:
+    runtime = load_audio_transcription_llm_runtime_from_env()
+    return AudioTranscriptionRuntime(
+        transcriber=LlmAudioTranscriber(
+            runtime.client,
+            retry_config=runtime.retry_config,
+        ),
+        metadata={
+            "transcription_backend": LLM_BACKEND,
+            "model": runtime.model,
+            "base_url": runtime.base_url,
+            "api_style": runtime.api_style,
+        },
+        segment_audio_format=MP3_SEGMENT_AUDIO_FORMAT,
+        silence_padding_ms=silence_padding_ms,
+    )
 
 
 def _build_transcription_prompt(previous_text: str) -> str:
