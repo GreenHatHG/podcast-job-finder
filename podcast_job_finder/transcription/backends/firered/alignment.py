@@ -6,9 +6,6 @@ import subprocess
 from pathlib import Path
 from typing import IO, Final
 
-from podcast_job_finder.transcription.backends.firered.config import (
-    FireRedProcessConfig,
-)
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     CharacterAlignment,
@@ -32,21 +29,25 @@ class FireRedTextAlignmentClient:
     def __init__(
         self,
         *,
-        process_config: FireRedProcessConfig,
+        python_executable: Path,
         asr_model_dir: Path,
+        ort_provider: str,
+        ort_intra_op_threads: int,
     ) -> None:
-        _require_file(process_config.python_executable, "FIRERED_PYTHON")
+        _require_file(python_executable, "FIRERED_PYTHON")
         _require_model_files(asr_model_dir)
-        if process_config.ort_intra_op_threads <= 0:
+        if ort_intra_op_threads <= 0:
             raise ValueError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
-        self._process_config = process_config
+        self._python_executable = python_executable
         self._asr_model_dir = asr_model_dir
+        self._ort_provider = ort_provider
+        self._ort_intra_op_threads = ort_intra_op_threads
         self._process: subprocess.Popen[str] | None = None
 
     def metadata(self) -> dict[str, object]:
         return {
             "timestamp_model": "FireRedASR2-CTC-ONNX",
-            "timestamp_provider": self._process_config.ort_provider,
+            "timestamp_provider": self._ort_provider,
             "timestamp_model_dir": str(self._asr_model_dir.resolve()),
         }
 
@@ -90,14 +91,14 @@ class FireRedTextAlignmentClient:
         environment.setdefault("TOKENIZERS_PARALLELISM", "false")
         process = subprocess.Popen(  # pylint: disable=consider-using-with
             [
-                str(self._process_config.python_executable),
+                str(self._python_executable),
                 str(worker_path),
                 "--asr-model-dir",
                 str(self._asr_model_dir),
                 "--ort-provider",
-                self._process_config.ort_provider,
+                self._ort_provider,
                 "--ort-intra-op-threads",
-                str(self._process_config.ort_intra_op_threads),
+                str(self._ort_intra_op_threads),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

@@ -24,7 +24,6 @@ from podcast_job_finder.transcription.backends.firered.alignment import (
 from podcast_job_finder.transcription.backends.firered.config import (
     DEFAULT_ORT_INTRA_OP_THREADS,
     DEFAULT_ORT_PROVIDER,
-    FireRedProcessConfig,
 )
 from podcast_job_finder.transcription.models import AudioTranscriptionRuntime
 from podcast_job_finder.transcription.runtime_environment import (
@@ -50,8 +49,12 @@ def load_doubao_transcription_runtime(
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
 ) -> AudioTranscriptionRuntime:
     vad_config = _build_doubao_vad_config(silence_padding_ms)
-    process_config = FireRedProcessConfig(
+    aligner = FireRedTextAlignmentClient(
         python_executable=load_firered_python(),
+        asr_model_dir=load_optional_path_env(
+            FIRERED_ASR_MODEL_DIR_ENV,
+            FIRERED_ASR_MODEL_RELATIVE_PATH,
+        ),
         ort_provider=os.environ.get(
             FIRERED_ORT_PROVIDER_ENV,
             DEFAULT_ORT_PROVIDER,
@@ -59,13 +62,6 @@ def load_doubao_transcription_runtime(
         ort_intra_op_threads=load_integer_env(
             FIRERED_ORT_INTRA_OP_THREADS_ENV,
             DEFAULT_ORT_INTRA_OP_THREADS,
-        ),
-    )
-    aligner = FireRedTextAlignmentClient(
-        process_config=process_config,
-        asr_model_dir=load_optional_path_env(
-            FIRERED_ASR_MODEL_DIR_ENV,
-            FIRERED_ASR_MODEL_RELATIVE_PATH,
         ),
     )
     transcriber_config = DoubaoTranscriberConfig(
