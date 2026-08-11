@@ -25,20 +25,14 @@ class SegmentBoundary:
     is_natural: bool
 
 
-@dataclass(slots=True, frozen=True)
-class SegmentPartitionConfig:
-    min_speech_frames: int
-    max_speech_frames: int
-    overlap_frames: int
-    frame_samples: int
-
-
-def build_segment_boundaries(
+def build_segment_boundaries(  # pylint: disable=too-many-arguments
     segments: list[tuple[int, int]],
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    config: SegmentPartitionConfig,
+    max_speech_frames: int,
+    overlap_frames: int,
+    frame_samples: int,
 ) -> list[SegmentBoundary]:
     """整理出所有可供后续分段使用的边界。
 
@@ -58,8 +52,8 @@ def build_segment_boundaries(
         audio,
         start_frame=segments[0][0],
         end_frame=segments[-1][1],
-        max_speech_frames=config.max_speech_frames,
-        frame_samples=config.frame_samples,
+        max_speech_frames=max_speech_frames,
+        frame_samples=frame_samples,
     )
 
     for segment_index, (start_frame, end_frame) in enumerate(segments):
@@ -74,7 +68,8 @@ def build_segment_boundaries(
                 (start_frame, end_frame),
                 speech_frames=speech_frames,
                 audio=audio,
-                config=config,
+                overlap_frames=overlap_frames,
+                frame_samples=frame_samples,
                 fallback_candidates=fallback_candidates,
             )
         )
@@ -117,12 +112,13 @@ def _natural_boundary(
     )
 
 
-def _build_internal_boundaries(
+def _build_internal_boundaries(  # pylint: disable=too-many-arguments
     segment: tuple[int, int],
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    config: SegmentPartitionConfig,
+    overlap_frames: int,
+    frame_samples: int,
     fallback_candidates: list[CutCandidate],
 ) -> list[SegmentBoundary]:
     """为一段连续语音寻找可用的内部切分位置。
@@ -139,7 +135,7 @@ def _build_internal_boundaries(
         audio,
         start_frame=start_frame,
         end_frame=end_frame,
-        frame_samples=config.frame_samples,
+        frame_samples=frame_samples,
     )
 
     # fallback_candidates 同时包含整段语音各处的强制切点。当前循环只负责
@@ -163,7 +159,7 @@ def _build_internal_boundaries(
             output_start_frame=_calculate_output_start_frame(
                 candidate,
                 segment_start_frame=start_frame,
-                overlap_frames=config.overlap_frames,
+                overlap_frames=overlap_frames,
             ),
             # 保存停顿长度和声音大小，供后续选择更合适的边界。
             silence_duration_frames=candidate.silence_duration_frames,

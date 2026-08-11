@@ -8,9 +8,6 @@ import numpy as np
 from numpy.typing import NDArray
 from ten_vad import TenVad  # type: ignore[import-untyped]
 
-from podcast_job_finder.audio.segmentation._segment_candidates import (
-    SegmentPartitionConfig,
-)
 from podcast_job_finder.audio.segmentation._segment_split import (
     MIN_CUT_POSITION_RATIO,
     optimize_segment_partition,
@@ -237,15 +234,13 @@ def _detect_speech_segments(
         raw_segments,
         speech_frames=speech_frames,
         audio=audio,
-        config=SegmentPartitionConfig(
-            min_speech_frames=_milliseconds_to_frames(
-                config.min_speech_duration_ms,
-                frame_duration_ms,
-            ),
-            max_speech_frames=max_speech_frames,
-            overlap_frames=forced_split_overlap_frames,
-            frame_samples=VAD_FRAME_SAMPLES,
+        min_speech_frames=_milliseconds_to_frames(
+            config.min_speech_duration_ms,
+            frame_duration_ms,
         ),
+        max_speech_frames=max_speech_frames,
+        overlap_frames=forced_split_overlap_frames,
+        frame_samples=VAD_FRAME_SAMPLES,
     )
     logger.debug(
         "全局片段优化完成：segment_count=%d",

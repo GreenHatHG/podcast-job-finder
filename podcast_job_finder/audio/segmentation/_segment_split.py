@@ -10,7 +10,6 @@ from numpy.typing import NDArray
 from podcast_job_finder.audio.segmentation._pcm import milliseconds_to_frames
 from podcast_job_finder.audio.segmentation._segment_candidates import (
     SegmentBoundary,
-    SegmentPartitionConfig,
     build_segment_boundaries,
 )
 from podcast_job_finder.audio.segmentation.normalized_audio import NormalizedAudio
@@ -40,12 +39,15 @@ class _PartitionState:
     previous_indexes: list[int]
 
 
-def optimize_segment_partition(
+def optimize_segment_partition(  # pylint: disable=too-many-arguments
     segments: list[tuple[int, int]],
     *,
     speech_frames: NDArray[np.bool_],
     audio: NormalizedAudio,
-    config: SegmentPartitionConfig,
+    min_speech_frames: int,
+    max_speech_frames: int,
+    overlap_frames: int,
+    frame_samples: int,
 ) -> list[tuple[int, int]]:
     """用动态规划同时完成长片段切分和相邻短片段合并。"""
     if not segments:
@@ -55,17 +57,20 @@ def optimize_segment_partition(
         segments,
         speech_frames=speech_frames,
         audio=audio,
-        config=config,
+        max_speech_frames=max_speech_frames,
+        overlap_frames=overlap_frames,
+        frame_samples=frame_samples,
     )
     boundary_losses = _calculate_boundary_losses(
         boundaries,
         sample_rate=audio.sample_rate,
-        config=config,
+        frame_samples=frame_samples,
     )
     selected_indexes = _find_optimal_boundary_indexes(
         boundaries,
         boundary_losses=boundary_losses,
-        config=config,
+        min_speech_frames=min_speech_frames,
+        max_speech_frames=max_speech_frames,
     )
     return _build_segments(boundaries, selected_indexes)
 
@@ -74,7 +79,7 @@ def _calculate_boundary_losses(
     boundaries: list[SegmentBoundary],
     *,
     sample_rate: int,
-    config: SegmentPartitionConfig,
+    frame_samples: int,
 ) -> list[float]:
     internal_boundaries = [
         boundary for boundary in boundaries if not boundary.is_natural
@@ -88,7 +93,7 @@ def _calculate_boundary_losses(
     full_silence_frames = milliseconds_to_frames(
         FULL_SILENCE_DURATION_MS,
         sample_rate=sample_rate,
-        frame_samples=config.frame_samples,
+        frame_samples=frame_samples,
     )
     return [
         _calculate_boundary_loss(
@@ -144,7 +149,8 @@ def _find_optimal_boundary_indexes(
     boundaries: list[SegmentBoundary],
     *,
     boundary_losses: list[float],
-    config: SegmentPartitionConfig,
+    min_speech_frames: int,
+    max_speech_frames: int,
 ) -> list[int]:
     state = _PartitionState(
         costs=[inf] * len(boundaries),
@@ -158,7 +164,8 @@ def _find_optimal_boundary_indexes(
             end_index,
             boundaries=boundaries,
             boundary_losses=boundary_losses,
-            config=config,
+            min_speech_frames=min_speech_frames,
+            max_speech_frames=max_speech_frames,
             state=state,
         )
 
@@ -167,12 +174,13 @@ def _find_optimal_boundary_indexes(
     return _backtrack_boundary_indexes(state.previous_indexes)
 
 
-def _update_optimal_predecessor(
+def _update_optimal_predecessor(  # pylint: disable=too-many-arguments
     end_index: int,
     *,
     boundaries: list[SegmentBoundary],
     boundary_losses: list[float],
-    config: SegmentPartitionConfig,
+    min_speech_frames: int,
+    max_speech_frames: int,
     state: _PartitionState,
 ) -> None:
     best_rank = (inf, len(boundaries), 0)
@@ -181,14 +189,15 @@ def _update_optimal_predecessor(
     for start_index in range(end_index - 1, -1, -1):
         # 最长时长约束只计算本段新增的原始音频；切点重叠会在结果构建时额外加入。
         segment_frames = end_frame - boundaries[start_index].next_start_frame
-        if segment_frames > config.max_speech_frames:
+        if segment_frames > max_speech_frames:
             break
         if segment_frames <= 0 or state.costs[start_index] == inf:
             continue
 
         candidate_cost = state.costs[start_index] + _calculate_segment_loss(
             segment_frames,
-            config=config,
+            min_speech_frames=min_speech_frames,
+            max_speech_frames=max_speech_frames,
         )
         if not is_terminal:
             candidate_cost += boundary_losses[end_index]
@@ -205,13 +214,14 @@ def _update_optimal_predecessor(
 def _calculate_segment_loss(
     segment_frames: int,
     *,
-    config: SegmentPartitionConfig,
+    min_speech_frames: int,
+    max_speech_frames: int,
 ) -> float:
-    target_frames = (config.min_speech_frames + config.max_speech_frames) / 2
+    target_frames = (min_speech_frames + max_speech_frames) / 2
     length_loss = abs(segment_frames - target_frames) / target_frames
     shortfall_ratio = max(
         0.0,
-        (config.min_speech_frames - segment_frames) / config.min_speech_frames,
+        (min_speech_frames - segment_frames) / min_speech_frames,
     )
     return (
         length_loss * SEGMENT_LENGTH_LOSS_WEIGHT
