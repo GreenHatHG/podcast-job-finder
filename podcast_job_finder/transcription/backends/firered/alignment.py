@@ -3,13 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final
 
 from podcast_job_finder.transcription.backends.firered.config import (
-    DEFAULT_ORT_INTRA_OP_THREADS,
-    DEFAULT_ORT_PROVIDER,
+    FireRedProcessConfig,
 )
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
@@ -30,31 +28,24 @@ REQUIRED_ALIGNMENT_MODEL_FILES: Final = (
 WORKER_ERROR: Final = "FireRed CTC 工作进程返回无效结果：{message}"
 
 
-@dataclass(slots=True, frozen=True)
-class FireRedAlignmentConfig:
-    python_executable: Path
-    asr_model_dir: Path
-    ort_provider: str = DEFAULT_ORT_PROVIDER
-    ort_intra_op_threads: int = DEFAULT_ORT_INTRA_OP_THREADS
-
-    def __post_init__(self) -> None:
-        _require_file(self.python_executable, "FIRERED_PYTHON")
-        _require_model_files(self.asr_model_dir)
-        if self.ort_intra_op_threads <= 0:
-            raise ValueError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
+class FireRedTextAlignmentClient:
+    def __init__(
+        self,
+        *,
+        process_config: FireRedProcessConfig,
+        asr_model_dir: Path,
+    ) -> None:
+        _require_model_files(asr_model_dir)
+        self._process_config = process_config
+        self._asr_model_dir = asr_model_dir
+        self._process: subprocess.Popen[str] | None = None
 
     def metadata(self) -> dict[str, object]:
         return {
             "timestamp_model": "FireRedASR2-CTC-ONNX",
-            "timestamp_provider": self.ort_provider,
-            "timestamp_model_dir": str(self.asr_model_dir.resolve()),
+            "timestamp_provider": self._process_config.ort_provider,
+            "timestamp_model_dir": str(self._asr_model_dir.resolve()),
         }
-
-
-class FireRedTextAlignmentClient:
-    def __init__(self, config: FireRedAlignmentConfig) -> None:
-        self._config = config
-        self._process: subprocess.Popen[str] | None = None
 
     def align(self, audio_path: Path, text: str) -> tuple[CharacterAlignment, ...]:
         response = self._request(
@@ -96,14 +87,14 @@ class FireRedTextAlignmentClient:
         environment.setdefault("TOKENIZERS_PARALLELISM", "false")
         process = subprocess.Popen(  # pylint: disable=consider-using-with
             [
-                str(self._config.python_executable),
+                str(self._process_config.python_executable),
                 str(worker_path),
                 "--asr-model-dir",
-                str(self._config.asr_model_dir),
+                str(self._asr_model_dir),
                 "--ort-provider",
-                self._config.ort_provider,
+                self._process_config.ort_provider,
                 "--ort-intra-op-threads",
-                str(self._config.ort_intra_op_threads),
+                str(self._process_config.ort_intra_op_threads),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -183,11 +174,6 @@ def _read_response(process: subprocess.Popen[str]) -> dict[str, object]:
     if not isinstance(response, dict):
         raise AudioTranscriptionError(WORKER_ERROR.format(message=response))
     return response
-
-
-def _require_file(path: Path, field_name: str) -> None:
-    if not path.is_file():
-        raise ValueError(f"{field_name} 指向的文件不存在：{path}")
 
 
 def _require_model_files(model_dir: Path) -> None:

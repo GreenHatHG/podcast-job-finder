@@ -12,10 +12,10 @@ from podcast_job_finder.audio.segmentation.speech_pipeline import (
 from podcast_job_finder.transcription.backends.firered.config import (
     DEFAULT_ORT_INTRA_OP_THREADS,
     DEFAULT_ORT_PROVIDER,
+    FireRedProcessConfig,
 )
 from podcast_job_finder.transcription.backends.firered.transcriber import (
     FireRedAudioTranscriber,
-    FireRedTranscriberConfig,
 )
 from podcast_job_finder.transcription.models import AudioTranscriptionRuntime
 from podcast_job_finder.transcription.runtime_environment import (
@@ -38,8 +38,16 @@ def load_firered_transcription_runtime(
     *,
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
 ) -> AudioTranscriptionRuntime:
-    config = FireRedTranscriberConfig(
+    process_config = FireRedProcessConfig(
         python_executable=load_firered_python(),
+        ort_provider=os.environ.get(FIRERED_ORT_PROVIDER_ENV, DEFAULT_ORT_PROVIDER),
+        ort_intra_op_threads=load_integer_env(
+            FIRERED_ORT_INTRA_OP_THREADS_ENV,
+            DEFAULT_ORT_INTRA_OP_THREADS,
+        ),
+    )
+    transcriber = FireRedAudioTranscriber(
+        process_config=process_config,
         asr_model_dir=load_optional_path_env(
             FIRERED_ASR_MODEL_DIR_ENV,
             FIRERED_ASR_MODEL_RELATIVE_PATH,
@@ -48,16 +56,11 @@ def load_firered_transcription_runtime(
             FIRERED_PUNC_MODEL_DIR_ENV,
             FIRERED_PUNC_MODEL_RELATIVE_PATH,
         ),
-        ort_provider=os.environ.get(FIRERED_ORT_PROVIDER_ENV, DEFAULT_ORT_PROVIDER),
-        ort_intra_op_threads=load_integer_env(
-            FIRERED_ORT_INTRA_OP_THREADS_ENV,
-            DEFAULT_ORT_INTRA_OP_THREADS,
-        ),
         silence_padding_ms=silence_padding_ms,
     )
     return AudioTranscriptionRuntime(
-        transcriber=FireRedAudioTranscriber(config),
-        metadata=config.metadata(),
+        transcriber=transcriber,
+        metadata=transcriber.metadata(),
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
         silence_padding_ms=silence_padding_ms,
     )

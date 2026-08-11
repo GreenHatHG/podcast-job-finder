@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final
 
 from podcast_job_finder.transcription.backends.firered.config import (
-    DEFAULT_ORT_INTRA_OP_THREADS,
-    DEFAULT_ORT_PROVIDER,
+    FireRedConfigError,
+    FireRedProcessConfig,
 )
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
@@ -48,42 +47,33 @@ WORKER_EXIT_ERROR: Final = "FireRed 工作进程意外退出：returncode={retur
 WORKER_RESPONSE_ERROR: Final = "FireRed 工作进程返回无效结果：{message}"
 
 
-class FireRedConfigError(ValueError):
-    """FireRed 本地转写配置无效。"""
-
-
-@dataclass(slots=True, frozen=True)
-class FireRedTranscriberConfig:
-    python_executable: Path
-    asr_model_dir: Path
-    punc_model_dir: Path
-    ort_provider: str = DEFAULT_ORT_PROVIDER
-    ort_intra_op_threads: int = DEFAULT_ORT_INTRA_OP_THREADS
-    silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
-
-    def __post_init__(self) -> None:
-        _require_file(self.python_executable, "FIRERED_PYTHON")
-        _require_model_files(self.asr_model_dir, REQUIRED_ASR_FILES)
-        _require_model_files(self.punc_model_dir, REQUIRED_PUNC_FILES)
-        if self.ort_intra_op_threads <= 0:
-            raise FireRedConfigError("FIRERED_ORT_INTRA_OP_THREADS 必须大于 0。")
-        if self.silence_padding_ms < 0:
+class FireRedAudioTranscriber:
+    def __init__(
+        self,
+        *,
+        process_config: FireRedProcessConfig,
+        asr_model_dir: Path,
+        punc_model_dir: Path,
+        silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS,
+    ) -> None:
+        _require_model_files(asr_model_dir, REQUIRED_ASR_FILES)
+        _require_model_files(punc_model_dir, REQUIRED_PUNC_FILES)
+        if silence_padding_ms < 0:
             raise FireRedConfigError("silence_padding_ms 必须大于等于 0。")
+        self._process_config = process_config
+        self._asr_model_dir = asr_model_dir
+        self._punc_model_dir = punc_model_dir
+        self._silence_padding_ms = silence_padding_ms
+        self._process: subprocess.Popen[str] | None = None
 
     def metadata(self) -> dict[str, object]:
         return {
             "transcription_backend": "firered",
             "model": FIRERED_MODEL_NAME,
-            "provider": self.ort_provider,
-            "asr_model_dir": str(self.asr_model_dir.resolve()),
-            "punc_model_dir": str(self.punc_model_dir.resolve()),
+            "provider": self._process_config.ort_provider,
+            "asr_model_dir": str(self._asr_model_dir.resolve()),
+            "punc_model_dir": str(self._punc_model_dir.resolve()),
         }
-
-
-class FireRedAudioTranscriber:
-    def __init__(self, config: FireRedTranscriberConfig) -> None:
-        self._config = config
-        self._process: subprocess.Popen[str] | None = None
 
     def transcribe(
         self,
@@ -135,9 +125,7 @@ class FireRedAudioTranscriber:
         previous_end_ms = previous_segment.character_timestamps[-1].end_ms
         if previous_end_ms <= segment.segment.start_ms:
             return 0
-        return (
-            previous_end_ms - segment.segment.start_ms + self._config.silence_padding_ms
-        )
+        return previous_end_ms - segment.segment.start_ms + self._silence_padding_ms
 
     def close(self) -> None:
         process = self._process
@@ -164,16 +152,16 @@ class FireRedAudioTranscriber:
         try:
             process = subprocess.Popen(  # pylint: disable=consider-using-with
                 [
-                    str(self._config.python_executable),
+                    str(self._process_config.python_executable),
                     str(worker_path),
                     "--asr-model-dir",
-                    str(self._config.asr_model_dir),
+                    str(self._asr_model_dir),
                     "--punc-model-dir",
-                    str(self._config.punc_model_dir),
+                    str(self._punc_model_dir),
                     "--ort-provider",
-                    self._config.ort_provider,
+                    self._process_config.ort_provider,
                     "--ort-intra-op-threads",
-                    str(self._config.ort_intra_op_threads),
+                    str(self._process_config.ort_intra_op_threads),
                 ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -275,12 +263,12 @@ class FireRedAudioTranscriber:
         absolute_start = _to_source_timestamp(
             start_ms,
             segment=segment,
-            silence_padding_ms=self._config.silence_padding_ms,
+            silence_padding_ms=self._silence_padding_ms,
         )
         absolute_end = _to_source_timestamp(
             end_ms,
             segment=segment,
-            silence_padding_ms=self._config.silence_padding_ms,
+            silence_padding_ms=self._silence_padding_ms,
         )
         if absolute_end <= absolute_start:
             return None
@@ -302,11 +290,6 @@ def _to_source_timestamp(
         segment.segment.end_ms,
         segment.segment.start_ms + relative_timestamp,
     )
-
-
-def _require_file(path: Path, field_name: str) -> None:
-    if not path.is_file():
-        raise FireRedConfigError(f"{field_name} 指向的文件不存在：{path}")
 
 
 def _require_model_files(model_dir: Path, relative_paths: tuple[str, ...]) -> None:
