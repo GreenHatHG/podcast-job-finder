@@ -126,14 +126,17 @@ class _PendingRequest:
 class DoubaoAudioTranscriber:
     """负责请求豆包、检查结果，并整理出带时间信息的文字。"""
 
-    def __init__(self, config: DoubaoTranscriberConfig) -> None:
+    def __init__(
+        self,
+        config: DoubaoTranscriberConfig,
+        *,
+        aligner: FireRedTextAlignmentClient,
+    ) -> None:
         """创建转写器及其所需的辅助组件。"""
 
         self._config = config
         self._service_error_segment_paths: set[Path] = set()
-
-        # FireRed 用来找出每个字在音频里的开始和结束时间。
-        self._aligner = FireRedTextAlignmentClient(config.alignment_config)
+        self._aligner = aligner
 
         # 豆包客户端负责发请求；这里同时拿到响应类型，后面用它判断最终结果。
         (

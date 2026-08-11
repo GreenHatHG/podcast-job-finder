@@ -4,9 +4,6 @@ import math
 from dataclasses import dataclass
 from typing import Final
 
-from podcast_job_finder.transcription.backends.firered.alignment import (
-    FireRedAlignmentConfig,
-)
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     DEFAULT_SILENCE_PADDING_MS,
 )
@@ -34,7 +31,6 @@ DOUBAO_REQUEST_INTERVAL_METADATA_KEY: Final = "request_interval_seconds"
 
 @dataclass(slots=True, frozen=True)
 class DoubaoTranscriberConfig:
-    alignment_config: FireRedAlignmentConfig
     max_in_flight_requests: int = DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS
     request_interval_seconds: float = DEFAULT_DOUBAO_REQUEST_INTERVAL_SECONDS
     silence_padding_ms: int = DEFAULT_SILENCE_PADDING_MS
@@ -63,7 +59,6 @@ class DoubaoTranscriberConfig:
             "transcription_backend": "doubao",
             "model": DOUBAO_MODEL_NAME,
             "protocol_version": DOUBAO_PROTOCOL_VERSION,
-            **self.alignment_config.metadata(),
             "max_uncovered_speech_ms": MAX_UNCOVERED_SPEECH_MS,
             "min_speech_coverage_ratio": MIN_SPEECH_COVERAGE_RATIO,
             "low_character_confidence_threshold": (LOW_CHARACTER_CONFIDENCE_THRESHOLD),

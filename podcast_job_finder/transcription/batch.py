@@ -302,9 +302,9 @@ def _transcribe_prepared_episode(
             resume=resume,
         )
         transcription_result, all_segments_cached = (
-            _transcribe_segments_with_checkpoints(
-                exported_segments=exported_segments,
-                runtime=runtime,
+            transcribe_speech_segments_with_checkpoints(
+                exported_segments,
+                transcriber=runtime.transcriber,
                 checkpoint_store=checkpoint_store,
                 resume=resume,
             )
@@ -322,22 +322,6 @@ def _transcribe_prepared_episode(
     except EXPECTED_EPISODE_ERRORS as error:
         logger.info("节目音频转写失败：%s", error)
         return _build_error_record(context.work_item, str(error))
-
-
-def _transcribe_segments_with_checkpoints(
-    exported_segments: Sequence[ExportedSpeechSegment],
-    *,
-    runtime: AudioTranscriptionRuntime,
-    checkpoint_store: SegmentTranscriptionCheckpointStore,
-    resume: bool,
-) -> tuple[AudioTranscriptionResult, bool]:
-    result, all_segments_cached = transcribe_speech_segments_with_checkpoints(
-        exported_segments,
-        transcriber=runtime.transcriber,
-        checkpoint_store=checkpoint_store,
-        resume=resume,
-    )
-    return result, all_segments_cached
 
 
 def _can_restore_completed_transcription(

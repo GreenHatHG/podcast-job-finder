@@ -16,6 +16,7 @@ from podcast_job_finder.transcription.backends.doubao.transcriber import (
 )
 from podcast_job_finder.transcription.backends.firered.alignment import (
     FireRedAlignmentConfig,
+    FireRedTextAlignmentClient,
 )
 from podcast_job_finder.transcription.backends.firered.config import (
     DEFAULT_ORT_INTRA_OP_THREADS,
@@ -152,22 +153,22 @@ def _load_firered_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRunti
 
 def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntime:
     vad_config = _build_doubao_vad_config(silence_padding_ms)
-    config = DoubaoTranscriberConfig(
-        alignment_config=FireRedAlignmentConfig(
-            python_executable=_load_firered_python(),
-            asr_model_dir=_load_optional_path_env(
-                FIRERED_ASR_MODEL_DIR_ENV,
-                FIRERED_ASR_MODEL_RELATIVE_PATH,
-            ),
-            ort_provider=os.environ.get(
-                FIRERED_ORT_PROVIDER_ENV,
-                DEFAULT_ORT_PROVIDER,
-            ),
-            ort_intra_op_threads=_load_integer_env(
-                FIRERED_ORT_INTRA_OP_THREADS_ENV,
-                DEFAULT_ORT_INTRA_OP_THREADS,
-            ),
+    alignment_config = FireRedAlignmentConfig(
+        python_executable=_load_firered_python(),
+        asr_model_dir=_load_optional_path_env(
+            FIRERED_ASR_MODEL_DIR_ENV,
+            FIRERED_ASR_MODEL_RELATIVE_PATH,
         ),
+        ort_provider=os.environ.get(
+            FIRERED_ORT_PROVIDER_ENV,
+            DEFAULT_ORT_PROVIDER,
+        ),
+        ort_intra_op_threads=_load_integer_env(
+            FIRERED_ORT_INTRA_OP_THREADS_ENV,
+            DEFAULT_ORT_INTRA_OP_THREADS,
+        ),
+    )
+    transcriber_config = DoubaoTranscriberConfig(
         max_in_flight_requests=_load_integer_env(
             DOUBAO_MAX_IN_FLIGHT_REQUESTS_ENV,
             DEFAULT_DOUBAO_MAX_IN_FLIGHT_REQUESTS,
@@ -180,7 +181,8 @@ def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntim
         vad_threshold=vad_config.threshold,
     )
     metadata = {
-        **config.metadata(),
+        **transcriber_config.metadata(),
+        **alignment_config.metadata(),
         "max_input_audio_duration_ms": DOUBAO_MAX_INPUT_AUDIO_DURATION_MS,
         "min_speech_duration_ms": vad_config.min_speech_duration_ms,
         "max_speech_duration_ms": vad_config.max_speech_duration_ms,
@@ -188,7 +190,10 @@ def _load_doubao_runtime(*, silence_padding_ms: int) -> AudioTranscriptionRuntim
         "min_silence_duration_ms": vad_config.min_silence_duration_ms,
     }
     return AudioTranscriptionRuntime(
-        transcriber=DoubaoAudioTranscriber(config),
+        transcriber=DoubaoAudioTranscriber(
+            transcriber_config,
+            aligner=FireRedTextAlignmentClient(alignment_config),
+        ),
         metadata=metadata,
         segment_audio_format=WAV_SEGMENT_AUDIO_FORMAT,
         vad_config=vad_config,
