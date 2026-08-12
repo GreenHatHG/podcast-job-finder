@@ -11,7 +11,7 @@ from pathlib import Path
 
 from worker_asr import FireRedOnnxAsr  # type: ignore[import-not-found]
 from worker_punctuation import FireRedPunctuation  # type: ignore[import-not-found]
-from worker_protocol import (
+from worker_protocol import (  # type: ignore[import-not-found]
     ERROR_STATUS,
     READY_STATUS,
     RESULT_STATUS,

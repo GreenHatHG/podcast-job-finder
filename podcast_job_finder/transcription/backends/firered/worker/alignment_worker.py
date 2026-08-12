@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from worker_text_alignment import FireRedTextAligner  # type: ignore[import-not-found]
-from worker_protocol import (
+from worker_protocol import (  # type: ignore[import-not-found]
     ERROR_STATUS,
     READY_STATUS,
     RESULT_STATUS,
