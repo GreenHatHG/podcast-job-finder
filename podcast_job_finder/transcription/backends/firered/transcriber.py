@@ -15,11 +15,11 @@ from podcast_job_finder.transcription.models import (
 )
 
 from ._worker_process import (
-    WORKER_READY_STATUS,
     WORKER_RESULT_STATUS,
     JsonLineWorkerProcess,
     WorkerExitedError,
     WorkerResponseError,
+    WorkerStartError,
 )
 
 
@@ -151,16 +151,16 @@ class FireRedAudioTranscriber:
         self._worker_process.close()
 
     def _ensure_process(self) -> None:
-        if self._worker_process.is_running:
-            return
         try:
-            self._worker_process.start()
+            self._worker_process.ensure_ready()
         except OSError as error:
             raise AudioTranscriptionError(
                 WORKER_START_ERROR.format(message=str(error))
             ) from error
-        try:
-            ready_response = self._worker_process.read_response()
+        except WorkerStartError as error:
+            raise AudioTranscriptionError(
+                WORKER_START_ERROR.format(message=error.detail)
+            ) from error
         except WorkerExitedError as error:
             raise AudioTranscriptionError(
                 WORKER_EXIT_ERROR.format(returncode=error.returncode)
@@ -169,26 +169,17 @@ class FireRedAudioTranscriber:
             raise AudioTranscriptionError(
                 WORKER_RESPONSE_ERROR.format(message=error.response)
             ) from error
-        if ready_response.get("status") != WORKER_READY_STATUS:
-            self.close()
-            raise AudioTranscriptionError(
-                WORKER_START_ERROR.format(
-                    message=ready_response.get("error", ready_response)
-                )
-            )
 
     def _request(
         self,
         payload: dict[str, object],
     ) -> dict[str, object]:
         try:
-            self._worker_process.write_request(payload)
+            return self._worker_process.request(payload)
         except (BrokenPipeError, OSError) as error:
             raise AudioTranscriptionError(
                 WORKER_EXIT_ERROR.format(returncode=self._worker_process.returncode)
             ) from error
-        try:
-            return self._worker_process.read_response()
         except WorkerExitedError as error:
             raise AudioTranscriptionError(
                 WORKER_EXIT_ERROR.format(returncode=error.returncode)

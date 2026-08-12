@@ -9,11 +9,11 @@ from podcast_job_finder.transcription.models import (
 )
 
 from ._worker_process import (
-    WORKER_READY_STATUS,
     WORKER_RESULT_STATUS,
     JsonLineWorkerProcess,
     WorkerExitedError,
     WorkerResponseError,
+    WorkerStartError,
 )
 
 
@@ -83,28 +83,19 @@ class FireRedTextAlignmentClient:
         self._worker_process.close()
 
     def _ensure_process(self) -> None:
-        if self._worker_process.is_running:
-            return
-        self._worker_process.start()
         try:
-            response = self._worker_process.read_response()
-        except (WorkerExitedError, WorkerResponseError) as error:
+            self._worker_process.ensure_ready()
+        except (WorkerExitedError, WorkerResponseError, WorkerStartError) as error:
             raise AudioTranscriptionError(
                 WORKER_ERROR.format(message=_worker_error_message(error))
             ) from error
-        if response.get("status") != WORKER_READY_STATUS:
-            self.close()
-            raise AudioTranscriptionError(
-                WORKER_ERROR.format(message=response.get("error", response))
-            )
 
     def _request(
         self,
         payload: dict[str, object],
     ) -> dict[str, object]:
-        self._worker_process.write_request(payload)
         try:
-            return self._worker_process.read_response()
+            return self._worker_process.request(payload)
         except (WorkerExitedError, WorkerResponseError) as error:
             raise AudioTranscriptionError(
                 WORKER_ERROR.format(message=_worker_error_message(error))
@@ -140,7 +131,11 @@ def _parse_integer(payload: dict[str, object], field_name: str) -> int:
     return value
 
 
-def _worker_error_message(error: WorkerExitedError | WorkerResponseError) -> object:
+def _worker_error_message(
+    error: WorkerStartError | WorkerExitedError | WorkerResponseError,
+) -> object:
+    if isinstance(error, WorkerStartError):
+        return error.detail
     if isinstance(error, WorkerExitedError):
         return f"进程退出：{error.returncode}"
     return error.response

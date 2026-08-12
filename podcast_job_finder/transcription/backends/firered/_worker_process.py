@@ -19,6 +19,12 @@ class WorkerExitedError(RuntimeError):
         self.returncode = returncode
 
 
+class WorkerStartError(RuntimeError):
+    def __init__(self, detail: object) -> None:
+        super().__init__(str(detail))
+        self.detail = detail
+
+
 class WorkerResponseError(RuntimeError):
     def __init__(self, response: object) -> None:
         super().__init__(str(response))
@@ -62,16 +68,20 @@ class JsonLineWorkerProcess:
         )
         self._process = process
 
-    def write_request(self, payload: dict[str, object]) -> None:
+    def read_response(self) -> dict[str, object]:
+        return _read_response(self._require_process())
+
+    def request(self, payload: dict[str, object]) -> dict[str, object]:
         process = self._require_process()
         _write_request(
             process.stdin,
             payload,
             stdin_unavailable_error=self._stdin_unavailable_error,
         )
+        return _read_response(process)
 
-    def read_response(self) -> dict[str, object]:
-        return _read_response(self._require_process())
+    def ensure_ready(self) -> None:
+        self._ensure_ready()
 
     def close(self) -> None:
         process = self._process
@@ -98,6 +108,16 @@ class JsonLineWorkerProcess:
         if process is None:
             raise WorkerExitedError(None)
         return process
+
+    def _ensure_ready(self) -> None:
+        if self.is_running:
+            return
+        self.start()
+        ready_response = self.read_response()
+        if ready_response.get("status") == WORKER_READY_STATUS:
+            return
+        self.close()
+        raise WorkerStartError(ready_response.get("error", ready_response))
 
 
 def _write_request(
