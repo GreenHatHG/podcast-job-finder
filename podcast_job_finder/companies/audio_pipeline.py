@@ -13,9 +13,7 @@ from podcast_job_finder.transcription.manifest import (
     load_episode_transcription_manifest,
 )
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
-from podcast_job_finder.companies.episode_runner import (
-    EpisodeExtractionRuntime,
-)
+from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.pipeline import BatchEpisodePipelineResult

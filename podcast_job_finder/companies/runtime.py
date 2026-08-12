@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Final
 
-from podcast_job_finder.companies.episode_runner import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import PROMPT_TEMPLATE
 from podcast_job_finder.environment import get_optional_env
 from podcast_job_finder.llm import (
@@ -13,6 +13,15 @@ from podcast_job_finder.llm import (
     load_llm_runtime_from_env,
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
+
+
+@dataclass(slots=True, frozen=True)
+class EpisodeExtractionRuntime:
+    """公司提取流程运行所需的固定依赖和缓存签名。"""
+
+    llm: LlmRuntime
+    company_blacklist: tuple[str, ...]
+    runtime_signature: str
 
 
 COMPANY_BLACKLIST_ENV_NAME: Final = "COMPANY_BLACKLIST"

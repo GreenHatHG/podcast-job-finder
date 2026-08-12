@@ -22,18 +22,11 @@ from podcast_job_finder.companies.checkpoint import (
     LlmCheckpointSavePayload,
     LlmCheckpointStore,
 )
-from podcast_job_finder.llm import LlmRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
+from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True, frozen=True)
-class EpisodeExtractionRuntime:
-    llm: LlmRuntime
-    company_blacklist: tuple[str, ...]
-    runtime_signature: str
 
 
 @dataclass(slots=True, frozen=True)

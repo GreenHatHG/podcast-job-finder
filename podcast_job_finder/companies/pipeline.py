@@ -9,11 +9,17 @@ from typing import Final, Sequence
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.episode_runner import (
     CompletedEpisodeExtraction,
-    EpisodeExtractionRuntime,
     PreparedEpisodeLlmWork,
     restore_or_prepare_episode_work,
     run_prepared_episode_llm_work,
 )
+from podcast_job_finder.companies.pipeline_results import (
+    EPISODE_RESULT_INCOMPLETE_ERROR,
+    RESULT_STATUS_SUCCESS,
+    build_error_result_record,
+    build_success_result_record,
+)
+from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.page_loader import (
@@ -31,15 +37,11 @@ from podcast_job_finder.episode import EpisodeParseError
 from podcast_job_finder.tracing import trace_id_var
 
 
-RESULT_STATUS_SUCCESS: Final = "success"
-RESULT_STATUS_ERROR: Final = "error"
 TASK_QUEUE_MAX_SIZE: Final = 10
 QUEUE_WAIT_TIMEOUT_SECONDS: Final = 0.5
 PRODUCER_THREAD_NAME: Final = "episode-prompt-producer"
 CONSUMER_THREAD_NAME: Final = "episode-llm-consumer"
 QUEUE_SENTINEL: Final = object()
-EPISODE_RESULT_INCOMPLETE_ERROR: Final = "节目流水线未生成完整结果。"
-
 logger = logging.getLogger(__name__)
 
 EXPECTED_EPISODE_ERRORS: Final = (
@@ -204,7 +206,7 @@ def _produce_episode_tasks(
                 )
                 if isinstance(episode_work, CompletedEpisodeExtraction):
                     shared_state.episode_results[episode_index] = (
-                        _build_success_result_record(episode_work)
+                        build_success_result_record(episode_work)
                     )
                     continue
 
@@ -221,11 +223,9 @@ def _produce_episode_tasks(
                 )
             except EXPECTED_EPISODE_ERRORS as error:
                 logger.info("节目生产失败：%s", error)
-                shared_state.episode_results[episode_index] = (
-                    _build_error_result_record(
-                        work_item=work_item,
-                        error_message=str(error),
-                    )
+                shared_state.episode_results[episode_index] = build_error_result_record(
+                    work_item=work_item,
+                    error_message=str(error),
                 )
             finally:
                 trace_id_var.set("-")
@@ -272,12 +272,12 @@ def _consume_episode_tasks(
                     completed_extraction.extraction_result.filtered_count,
                 )
                 shared_state.episode_results[queued_work.episode_index] = (
-                    _build_success_result_record(completed_extraction)
+                    build_success_result_record(completed_extraction)
                 )
             except EXPECTED_EPISODE_ERRORS as error:
                 logger.info("节目消费失败：%s", error)
                 shared_state.episode_results[queued_work.episode_index] = (
-                    _build_error_result_record(
+                    build_error_result_record(
                         work_item=queued_work.work_item,
                         error_message=str(error),
                     )
@@ -336,35 +336,3 @@ def _get_queue_item(
         if not isinstance(payload, _QueuedEpisodeWork):
             raise TypeError("节目流水线收到未知队列任务。")
         return payload
-
-
-def _build_error_result_record(
-    *,
-    work_item: EpisodeWorkItem,
-    error_message: str,
-) -> dict:
-    record = work_item.to_result_metadata()
-    record.update(
-        {
-            "status": RESULT_STATUS_ERROR,
-            "error": error_message,
-        }
-    )
-    return record
-
-
-def _build_success_result_record(
-    completed_extraction: CompletedEpisodeExtraction,
-) -> dict:
-    record = completed_extraction.episode.to_result_metadata()
-    record.update(
-        {
-            "status": RESULT_STATUS_SUCCESS,
-            "companies": [
-                company.to_dict()
-                for company in completed_extraction.extraction_result.companies
-            ],
-            "filtered_count": completed_extraction.extraction_result.filtered_count,
-        }
-    )
-    return record

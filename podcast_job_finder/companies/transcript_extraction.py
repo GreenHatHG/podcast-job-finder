@@ -14,7 +14,7 @@ from podcast_job_finder.companies.candidate_merge import (
     build_candidate_merge_prompt,
     validate_merged_result,
 )
-from podcast_job_finder.companies.episode_runner import EpisodeExtractionRuntime
+from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import (
     build_company_extraction_prompt,
     normalize_company_mentions,
