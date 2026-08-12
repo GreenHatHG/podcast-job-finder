@@ -4,29 +4,29 @@ from __future__ import annotations
 # pylint: disable=import-error
 
 import argparse
-import json
 import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 from worker_text_alignment import FireRedTextAligner  # type: ignore[import-not-found]
+from worker_protocol import (
+    ERROR_STATUS,
+    READY_STATUS,
+    RESULT_STATUS,
+    configure_logging,
+    is_shutdown,
+    parse_request,
+    require_audio_path,
+    require_text,
+    write_response,
+)
 
-
-READY_STATUS = "ready"
-RESULT_STATUS = "result"
-ERROR_STATUS = "error"
-SHUTDOWN_COMMAND = "shutdown"
 logger = logging.getLogger(__name__)
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        stream=sys.stderr,
-    )
+    configure_logging()
     args = _build_argument_parser().parse_args()
     try:
         load_started = time.perf_counter()
@@ -35,28 +35,26 @@ def main() -> int:
             provider=args.ort_provider,
             intra_op_threads=args.ort_intra_op_threads,
         )
-        _write_response(
+        write_response(
             {
                 "status": READY_STATUS,
                 "model_load_seconds": round(time.perf_counter() - load_started, 4),
             }
         )
     except Exception as error:  # pylint: disable=broad-exception-caught
-        _write_response({"status": ERROR_STATUS, "error": str(error)})
+        write_response({"status": ERROR_STATUS, "error": str(error)})
         return 1
 
     for line in sys.stdin:
         try:
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("FireRed CTC 请求必须是 JSON 对象。")
-            if request.get("command") == SHUTDOWN_COMMAND:
+            request = parse_request(line, request_name="FireRed CTC")
+            if is_shutdown(request):
                 return 0
-            audio_path = _require_audio_path(request)
-            text = _require_text(request)
+            audio_path = require_audio_path(request, request_name="FireRed CTC")
+            text = require_text(request, request_name="FireRed CTC")
             started = time.perf_counter()
             alignments = aligner.align(audio_path, text)
-            _write_response(
+            write_response(
                 {
                     "status": RESULT_STATUS,
                     "alignments": [
@@ -75,7 +73,7 @@ def main() -> int:
             )
         except Exception as error:  # pylint: disable=broad-exception-caught
             logger.exception("FireRed CTC 时间匹配失败")
-            _write_response({"status": ERROR_STATUS, "error": str(error)})
+            write_response({"status": ERROR_STATUS, "error": str(error)})
     return 0
 
 
@@ -85,27 +83,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ort-provider", required=True)
     parser.add_argument("--ort-intra-op-threads", type=int, required=True)
     return parser
-
-
-def _require_audio_path(request: dict[str, Any]) -> Path:
-    value = request.get("audio_path")
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("FireRed CTC 请求缺少 audio_path。")
-    path = Path(value)
-    if not path.is_file():
-        raise ValueError(f"FireRed CTC 输入音频不存在：{path}")
-    return path
-
-
-def _require_text(request: dict[str, Any]) -> str:
-    value = request.get("text")
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("FireRed CTC 请求缺少 text。")
-    return value
-
-
-def _write_response(payload: dict[str, object]) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
