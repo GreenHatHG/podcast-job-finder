@@ -8,17 +8,32 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import tempfile
 import time
+import wave
 from collections import deque
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from podcast_job_finder.audio.segmentation.segment_export import (
+    WAV_SEGMENT_AUDIO_FORMAT,
+    ExportedSpeechSegment,
+)
+from podcast_job_finder.audio.segmentation.speech_pipeline import (
+    detect_and_export_speech_segments,
+)
+from podcast_job_finder.audio.segmentation.vad import (
+    VAD_SAMPLE_RATE,
+    SpeechSegment,
+    VadConfig,
+)
 from podcast_job_finder.transcription.backends.firered.alignment import (
     FireRedTextAlignmentClient,
 )
-from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     CharacterAlignment,
@@ -52,7 +67,10 @@ from .config import (
     DOUBAO_RESPONSE_MAX_ATTEMPTS,
     DOUBAO_RETRY_BASE_DELAY_SECONDS,
 )
-from .output import build_doubao_transcription_output
+from .output import (
+    DoubaoOverlapOnlyResultError,
+    build_doubao_transcription_output,
+)
 from .request_client import (
     DoubaoRequestClient,
     DoubaoRequestError,
@@ -74,6 +92,8 @@ from .truncation_probe import (
 
 
 logger = logging.getLogger(__name__)
+DOUBAO_FALLBACK_TRAILING_SILENCE_MS = 2_000
+DOUBAO_OVERLAP_FALLBACK_SPLIT_COUNT = 2
 DOUBAO_ASR_SERVICE_ERROR = (
     "豆包 ASR 在 {count} 个不同音频片段发生服务或协议异常，达到停止阈值："
     "threshold={threshold} latest_path={path} latest_reason={reason}"
@@ -195,17 +215,24 @@ class DoubaoAudioTranscriber:
             initial_responses = self._request_client.collect_responses(
                 segment.file_path
             )
-            attempts = self._run_segment_attempts(segment, initial_responses)
+            attempts = self._run_segment_attempts_with_fallback(
+                segment,
+                initial_responses,
+            )
         except DoubaoRequestError as error:
             self._record_service_error_segment(segment, reason=str(error))
             raise
 
         # 选择更完整可靠的结果，并换算成它在原始音频中的实际时间。
-        return self._build_transcription_output(
-            segment,
-            attempts,
-            previous_segment=previous_segment,
-        )
+        try:
+            return self._build_transcription_output_with_fallback(
+                segment,
+                attempts,
+                previous_segment=previous_segment,
+            )
+        except DoubaoRequestError as error:
+            self._record_service_error_segment(segment, reason=str(error))
+            raise
 
     def transcribe_batches(
         self,
@@ -325,16 +352,134 @@ class DoubaoAudioTranscriber:
     ) -> TranscriptionSegmentResult:
         """把一个片段的豆包返回消息整理成上层可以保存的片段结果。"""
 
-        attempts = self._run_segment_attempts(segment, responses)
+        attempts = self._run_segment_attempts_with_fallback(segment, responses)
         return TranscriptionSegmentResult(
             segment=segment,
-            output=self._build_transcription_output(
+            output=self._build_transcription_output_with_fallback(
                 segment,
                 attempts,
                 previous_segment=previous_segment,
             ),
             previous_segment=previous_segment,
         )
+
+    def _build_transcription_output_with_fallback(
+        self,
+        segment: ExportedSpeechSegment,
+        attempts: _SegmentAttempts,
+        *,
+        previous_segment: TranscribedSpeechSegment | None,
+    ) -> TranscriptionOutput:
+        """整段结果只有重叠文字时，重切当前片段并分别识别。"""
+
+        try:
+            return self._build_transcription_output(
+                segment,
+                attempts,
+                previous_segment=previous_segment,
+            )
+        except DoubaoOverlapOnlyResultError as error:
+            logger.warning(
+                "豆包只识别到重叠音频，将临时重切片段后重试：index=%d path=%s",
+                segment.index,
+                segment.file_path,
+            )
+            return self._transcribe_resplit_segment(
+                segment,
+                previous_segment=previous_segment,
+                original_error=error,
+            )
+
+    def _transcribe_resplit_segment(
+        self,
+        segment: ExportedSpeechSegment,
+        *,
+        previous_segment: TranscribedSpeechSegment | None,
+        original_error: DoubaoOverlapOnlyResultError,
+    ) -> TranscriptionOutput:
+        """使用项目 VAD 重切失败片段，并把各子片段结果合并回一个输出。"""
+
+        with _temporary_resplit_segments(
+            segment,
+            silence_padding_ms=self._silence_padding_ms,
+            vad_threshold=self._vad_threshold,
+        ) as child_segments:
+            if len(child_segments) < DOUBAO_OVERLAP_FALLBACK_SPLIT_COUNT:
+                raise original_error
+
+            outputs: list[TranscriptionOutput] = []
+            current_previous = previous_segment
+            for child_segment in child_segments:
+                responses = self._request_client.collect_responses(
+                    child_segment.file_path
+                )
+                child_attempts = self._run_segment_attempts_with_fallback(
+                    child_segment,
+                    responses,
+                )
+                try:
+                    output = self._build_transcription_output(
+                        child_segment,
+                        child_attempts,
+                        previous_segment=current_previous,
+                    )
+                except DoubaoOverlapOnlyResultError:
+                    continue
+                if not output.text:
+                    continue
+                outputs.append(output)
+                current_previous = build_transcribed_speech_segment(
+                    child_segment,
+                    output,
+                )
+
+        if not outputs:
+            raise original_error
+        logger.info(
+            "豆包重切片段识别完成：index=%d child_segments=%d retained_outputs=%d "
+            "path=%s",
+            segment.index,
+            len(child_segments),
+            len(outputs),
+            segment.file_path,
+        )
+        return _merge_transcription_outputs(outputs)
+
+    def _run_segment_attempts_with_fallback(
+        self,
+        segment: ExportedSpeechSegment,
+        initial_responses: SessionResponses,
+    ) -> _SegmentAttempts:
+        """在缺少终止响应时追加尾部静音，并重新请求当前片段。"""
+
+        try:
+            return self._run_segment_attempts(segment, initial_responses)
+        except DoubaoMissingFinalResponseError as error:
+            logger.warning(
+                "豆包片段缺少完整终止响应，将追加 %dms 尾部静音后重试：index=%d path=%s",
+                DOUBAO_FALLBACK_TRAILING_SILENCE_MS,
+                segment.index,
+                segment.file_path,
+            )
+            try:
+                with _temporary_trailing_silence(
+                    segment.file_path,
+                    duration_ms=DOUBAO_FALLBACK_TRAILING_SILENCE_MS,
+                ) as padded_path:
+                    padded_segment = ExportedSpeechSegment(
+                        index=segment.index,
+                        segment=segment.segment,
+                        file_path=padded_path,
+                    )
+                    padded_responses = self._request_client.collect_responses(
+                        padded_path
+                    )
+                    return self._run_segment_attempts(
+                        padded_segment,
+                        padded_responses,
+                    )
+            except (OSError, wave.Error) as fallback_error:
+                raise error from fallback_error
 
     def _run_segment_attempts(
         self,
@@ -609,6 +754,129 @@ def _build_failed_segment_context(
         end_ms=segment.segment.end_ms,
         text="",
     )
+
+
+@contextmanager
+def _temporary_resplit_segments(
+    source_segment: ExportedSpeechSegment,
+    *,
+    silence_padding_ms: int,
+    vad_threshold: float,
+) -> Iterator[list[ExportedSpeechSegment]]:
+    """把一个失败 WAV 临时重切，并将子片段位置换算回原录音。"""
+
+    source_duration_ms = _wav_duration_ms(source_segment.file_path)
+    max_speech_duration_ms = math.ceil(
+        source_duration_ms / DOUBAO_OVERLAP_FALLBACK_SPLIT_COUNT
+    )
+    vad_config = VadConfig(
+        threshold=vad_threshold,
+        min_speech_duration_ms=max(100, max_speech_duration_ms // 2),
+        max_speech_duration_ms=max_speech_duration_ms,
+    )
+    with tempfile.TemporaryDirectory(prefix="podcast-doubao-resplit-") as directory:
+        local_segments = detect_and_export_speech_segments(
+            source_segment.file_path,
+            output_dir=Path(directory),
+            config=vad_config,
+            silence_padding_ms=silence_padding_ms,
+            audio_format=WAV_SEGMENT_AUDIO_FORMAT,
+        )
+        yield [
+            mapped_segment
+            for item in local_segments
+            if (
+                mapped_segment := _map_resplit_segment_to_source(
+                    item,
+                    source_segment=source_segment,
+                    silence_padding_ms=silence_padding_ms,
+                )
+            )
+            is not None
+        ]
+
+
+def _map_resplit_segment_to_source(
+    local_segment: ExportedSpeechSegment,
+    *,
+    source_segment: ExportedSpeechSegment,
+    silence_padding_ms: int,
+) -> ExportedSpeechSegment | None:
+    """去掉源 WAV 自带的静音偏移，恢复子片段在原录音中的位置。"""
+
+    padding_samples = round(silence_padding_ms * VAD_SAMPLE_RATE / 1_000)
+    relative_start = max(0, local_segment.segment.start_sample - padding_samples)
+    relative_end = max(0, local_segment.segment.end_sample - padding_samples)
+    start_sample = min(
+        source_segment.segment.end_sample,
+        source_segment.segment.start_sample + relative_start,
+    )
+    end_sample = min(
+        source_segment.segment.end_sample,
+        source_segment.segment.start_sample + relative_end,
+    )
+    if end_sample <= start_sample:
+        return None
+    return ExportedSpeechSegment(
+        index=source_segment.index,
+        segment=SpeechSegment(
+            start_sample=start_sample,
+            end_sample=end_sample,
+        ),
+        file_path=local_segment.file_path,
+    )
+
+
+def _merge_transcription_outputs(
+    outputs: Sequence[TranscriptionOutput],
+) -> TranscriptionOutput:
+    """按播放顺序合并重切子片段的文字和时间信息。"""
+
+    return TranscriptionOutput(
+        text="\n".join(output.text for output in outputs),
+        character_timestamps=tuple(
+            timestamp for output in outputs for timestamp in output.character_timestamps
+        ),
+        sentences=tuple(
+            sentence for output in outputs for sentence in output.sentences
+        ),
+        diagnostics=outputs[-1].diagnostics,
+    )
+
+
+def _wav_duration_ms(path: Path) -> int:
+    with wave.open(str(path), "rb") as source:
+        return round(source.getnframes() * 1_000 / source.getframerate())
+
+
+@contextmanager
+def _temporary_trailing_silence(
+    source_path: Path,
+    *,
+    duration_ms: int,
+) -> Iterator[Path]:
+    """创建一个只在豆包重试期间使用的临时尾部静音 WAV。"""
+
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix="podcast-doubao-retry-",
+        suffix=".wav",
+    )
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        with wave.open(str(source_path), "rb") as source:
+            params = source.getparams()
+            frames = source.readframes(source.getnframes())
+        silence_frame_count = round(params.framerate * duration_ms / 1_000)
+        silence = bytes(silence_frame_count * params.sampwidth * params.nchannels)
+        with wave.Wave_write(str(temporary_path)) as target:
+            target.setnchannels(params.nchannels)
+            target.setsampwidth(params.sampwidth)
+            target.setframerate(params.framerate)
+            target.writeframes(frames + silence)
+        yield temporary_path
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _validate_response_summary(

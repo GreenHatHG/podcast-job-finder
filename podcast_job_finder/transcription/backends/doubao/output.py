@@ -27,6 +27,10 @@ DOUBAO_ALIGNMENT_AT_SEGMENT_START_ERROR: Final = (
 )
 
 
+class DoubaoOverlapOnlyResultError(AudioTranscriptionError):
+    """豆包只识别到当前片段与上一片段重复的内容。"""
+
+
 def build_doubao_transcription_output(  # pylint: disable=too-many-arguments
     text: str,
     alignments: tuple[CharacterAlignment, ...],
@@ -57,8 +61,9 @@ def build_doubao_transcription_output(  # pylint: disable=too-many-arguments
         去掉重复内容后的文字、每个字的时间、每句话的时间和检查记录。
 
     Raises:
-        AudioTranscriptionError: 豆包返回了文字却没有任何逐字时间，或者所有文字
-            都位于上一片段已经处理过的音频中，或者逐字时间全部停在片段起点。
+        DoubaoOverlapOnlyResultError: 所有文字都位于上一片段已经处理过的音频中。
+        AudioTranscriptionError: 豆包返回了文字却没有任何逐字时间，或者逐字时间
+            全部停在片段起点。
     """
     # 文字和逐字时间同时为空，说明这个片段没有可保存的识别内容。这属于有效
     # 结果，因此返回空文字，同时保留检查记录，方便之后确认本次识别发生了什么。
@@ -106,18 +111,20 @@ def build_doubao_transcription_output(  # pylint: disable=too-many-arguments
     if not retained:
         latest_end_ms = max(item.end_ms for item in absolute_alignments)
         if cutoff_ms > segment.segment.start_ms:
-            message = DOUBAO_OVERLAP_ONLY_RESULT_ERROR.format(
+            raise DoubaoOverlapOnlyResultError(
+                DOUBAO_OVERLAP_ONLY_RESULT_ERROR.format(
+                    path=segment.file_path,
+                    latest_end_ms=latest_end_ms,
+                    cutoff_ms=cutoff_ms,
+                )
+            )
+        raise AudioTranscriptionError(
+            DOUBAO_ALIGNMENT_AT_SEGMENT_START_ERROR.format(
                 path=segment.file_path,
                 latest_end_ms=latest_end_ms,
                 cutoff_ms=cutoff_ms,
             )
-        else:
-            message = DOUBAO_ALIGNMENT_AT_SEGMENT_START_ERROR.format(
-                path=segment.file_path,
-                latest_end_ms=latest_end_ms,
-                cutoff_ms=cutoff_ms,
-            )
-        raise AudioTranscriptionError(message)
+        )
 
     # source_start 是第一个保留字在完整 text 中的字符位置。文字也从这个位置开始
     # 截取，确保最终文字与 retained 中的逐字时间指向同一段内容。
