@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.llm import (
-    LlmRuntime,
     OpenAiCompatibleConfigError,
     load_transcription_formatting_llm_runtime_from_env,
 )
@@ -16,52 +15,29 @@ from podcast_job_finder.audio import (
     AudioFileDecodeError,
     AudioSegmentExportError,
 )
-from podcast_job_finder.audio.segmentation.speech_segment_checkpoint import (
-    SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
-    restore_or_export_speech_segments,
-)
-from podcast_job_finder.transcription.checkpoint import (
-    SegmentTranscriptionCheckpointStore,
-    transcribe_speech_segments_with_checkpoints,
-)
 from podcast_job_finder.audio.segmentation.segment_export import (
     MP3_SEGMENT_AUDIO_FORMAT,
     WAV_SEGMENT_AUDIO_FORMAT,
     SegmentAudioFormat,
     parse_segment_audio_format,
 )
-from podcast_job_finder.transcription.models import (
-    AudioTranscriptionError,
-    TranscribedSpeechSegment,
-)
+from podcast_job_finder.transcription.models import AudioTranscriptionError
 from podcast_job_finder.transcription.runtime import (
     AudioTranscriptionConfigError,
     AudioTranscriptionRuntime,
     load_audio_transcription_runtime_from_env,
 )
-from podcast_job_finder.transcription.manifest import (
-    TRANSCRIPTION_FILE_NAME,
-    save_audio_transcription_manifest,
-)
-from podcast_job_finder.transcription.formatting.article import (
-    FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME,
-    TRANSCRIPTION_ARTICLE_FILE_NAME,
-    save_transcription_article,
-)
 from podcast_job_finder.transcription.formatting.formatter import (
     EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
-    format_transcription_segments,
 )
-from podcast_job_finder.transcription.quality_report import (
-    TRANSCRIPTION_QUALITY_REPORT_FILE_NAME,
-    save_transcription_quality_report,
-)
+from podcast_job_finder.transcription import local_audio
+from podcast_job_finder.transcription.local_audio import transcribe_local_audio
 
 
 PROGRAM_NAME: Final = "podcast-transcribe"
 DEFAULT_OUTPUT_DIR: Final = Path("output/transcription_segments")
 INVALID_MAX_SEGMENTS_ERROR: Final = "max_segments 必须大于 0。"
-LOCAL_AUDIO_SOURCE_TYPE: Final = "local_audio"
+LOCAL_AUDIO_SOURCE_TYPE = local_audio.LOCAL_AUDIO_SOURCE_TYPE
 AUTO_SEGMENT_AUDIO_FORMAT: Final = "auto"
 SEGMENT_AUDIO_FORMAT_CHOICES: Final = (
     AUTO_SEGMENT_AUDIO_FORMAT,
@@ -80,7 +56,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     transcription_runtime = None
     try:
         transcription_runtime = load_audio_transcription_runtime_from_env()
-        payload = _run_transcription(args, transcription_runtime)
+        formatting_runtime = load_transcription_formatting_llm_runtime_from_env()
+        payload = transcribe_local_audio(
+            args.audio_path,
+            output_dir=args.output_dir,
+            max_segments=args.max_segments,
+            segment_audio_format=_resolve_segment_audio_format(
+                args.segment_audio_format,
+                transcription_runtime=transcription_runtime,
+            ),
+            resume=args.resume,
+            transcription_runtime=transcription_runtime,
+            formatting_runtime=formatting_runtime,
+        )
     except (
         AudioFileDecodeError,
         AudioSegmentExportError,
@@ -101,103 +89,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _run_transcription(
-    args: argparse.Namespace,
-    transcription_runtime: AudioTranscriptionRuntime,
-) -> dict[str, object]:
-    formatting_runtime = load_transcription_formatting_llm_runtime_from_env()
-    segment_audio_format = _resolve_segment_audio_format(
-        args.segment_audio_format,
-        transcription_runtime=transcription_runtime,
-    )
-    vad_config = transcription_runtime.vad_config
-    source_metadata = _build_local_audio_source_metadata(args.audio_path)
-    checkpoint_store = SegmentTranscriptionCheckpointStore(
-        metadata=source_metadata,
-        expected_metadata=source_metadata,
-    )
-    exported_segments = restore_or_export_speech_segments(
-        source_path=args.audio_path,
-        output_dir=args.output_dir,
-        checkpoint_path=args.output_dir / SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
-        vad_config=vad_config,
-        silence_padding_ms=transcription_runtime.silence_padding_ms,
-        audio_format=segment_audio_format,
-        overwrite=True,
-        resume=args.resume,
-    )
-    selected_segments = (
-        exported_segments[: args.max_segments]
-        if args.max_segments is not None
-        else exported_segments
-    )
-    result, _ = transcribe_speech_segments_with_checkpoints(
-        selected_segments,
-        transcriber=transcription_runtime.transcriber,
-        checkpoint_store=checkpoint_store,
-        resume=args.resume,
-    )
-    article_path = args.output_dir / TRANSCRIPTION_ARTICLE_FILE_NAME
-    save_transcription_article(
-        article_path,
-        title=args.audio_path.stem,
-        body=result.text,
-    )
-    quality_report_path = args.output_dir / TRANSCRIPTION_QUALITY_REPORT_FILE_NAME
-    save_transcription_quality_report(
-        quality_report_path,
-        result,
-        exported_segments=selected_segments,
-    )
-    formatting_metadata = _format_transcription(
-        args,
-        result.segments,
-        formatting_runtime=formatting_runtime,
-    )
-    return save_audio_transcription_manifest(
-        args.output_dir / TRANSCRIPTION_FILE_NAME,
-        metadata={
-            **source_metadata,
-            **transcription_runtime.metadata,
-            "audio_path": str(args.audio_path),
-            "segment_audio_format": segment_audio_format,
-            "available_segment_count": len(exported_segments),
-            "transcribed_segment_count": len(selected_segments),
-            "article_path": str(article_path),
-            "transcription_quality_report_path": str(quality_report_path),
-            **formatting_metadata,
-        },
-        exported_segments=selected_segments,
-        result=result,
-    )
-
-
-def _format_transcription(
-    args: argparse.Namespace,
-    segments: Sequence[TranscribedSpeechSegment],
-    *,
-    formatting_runtime: LlmRuntime,
-) -> dict[str, object]:
-    formatted_article = format_transcription_segments(
-        segments,
-        llm_client=formatting_runtime.client,
-        retry_config=formatting_runtime.retry_config,
-    )
-    formatted_article_path = args.output_dir / FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME
-    save_transcription_article(
-        formatted_article_path,
-        title=args.audio_path.stem,
-        body=formatted_article.text,
-    )
-    return {
-        "formatting_model": formatting_runtime.model,
-        "formatting_base_url": formatting_runtime.base_url,
-        "formatting_api_style": formatting_runtime.api_style,
-        "formatted_article_path": str(formatted_article_path),
-        "formatting": formatted_article.to_machine_audit_dict(),
-    }
-
-
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROGRAM_NAME)
     parser.add_argument("audio_path", type=Path)
@@ -214,13 +105,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--resume", action="store_true")
     return parser
-
-
-def _build_local_audio_source_metadata(audio_path: Path) -> dict[str, object]:
-    return {
-        "source_type": LOCAL_AUDIO_SOURCE_TYPE,
-        "source_audio_path": str(audio_path.resolve()),
-    }
 
 
 def _resolve_segment_audio_format(

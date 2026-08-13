@@ -16,6 +16,7 @@ from podcast_job_finder.companies.episode_runner import (
 from podcast_job_finder.companies.pipeline_results import (
     EPISODE_RESULT_INCOMPLETE_ERROR,
     RESULT_STATUS_SUCCESS,
+    BatchEpisodePipelineResult,
     build_error_result_record,
     build_success_result_record,
 )
@@ -52,13 +53,6 @@ EXPECTED_EPISODE_ERRORS: Final = (
     OpenAiCompatibleLlmError,
     ValueError,
 )
-
-
-@dataclass(slots=True, frozen=True)
-class BatchEpisodePipelineResult:
-    episode_results: list[dict]
-    success_count: int
-    fail_count: int
 
 
 @dataclass(slots=True, frozen=True)

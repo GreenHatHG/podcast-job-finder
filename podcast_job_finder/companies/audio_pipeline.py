@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Final
 
-from podcast_job_finder.transcription.batch import (
+from podcast_job_finder.transcription.pipeline_results import (
     RESULT_STATUS_SUCCESS,
     BatchAudioTranscriptionResult,
 )
@@ -16,7 +16,7 @@ from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.models import CompanyExtractionError
-from podcast_job_finder.companies.pipeline import BatchEpisodePipelineResult
+from podcast_job_finder.companies.pipeline_results import BatchEpisodePipelineResult
 from podcast_job_finder.companies.transcript_extraction import (
     extract_companies_from_transcript,
 )

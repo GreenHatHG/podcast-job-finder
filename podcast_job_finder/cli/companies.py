@@ -8,19 +8,19 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.transcription.batch import (
-    RESULT_STATUS_SUCCESS,
     BatchAudioTranscriptionError,
-    BatchAudioTranscriptionResult,
+    load_existing_batch_transcription_result,
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
+)
+from podcast_job_finder.transcription.pipeline_results import (
+    BatchAudioTranscriptionResult,
 )
 from podcast_job_finder.transcription.schedule import (
     DEFAULT_AUDIO_PROCESSING_MODE,
     SUPPORTED_AUDIO_PROCESSING_MODES,
     AudioProcessingMode,
 )
-from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
-from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
 from podcast_job_finder.transcription.runtime import (
     AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
@@ -256,7 +256,7 @@ def _run_feed_audio_extraction_only(
     feed: RssFeed,
     work_items: Sequence[EpisodeWorkItem],
 ) -> int:
-    transcription_result, skipped_count = _load_existing_transcription_result(
+    transcription_result, skipped_count = load_existing_batch_transcription_result(
         work_items
     )
     logger.info(
@@ -265,42 +265,6 @@ def _run_feed_audio_extraction_only(
         skipped_count,
     )
     return _run_audio_company_extraction(feed, transcription_result)
-
-
-def _load_existing_transcription_result(
-    work_items: Sequence[EpisodeWorkItem],
-    *,
-    audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
-) -> tuple[BatchAudioTranscriptionResult, int]:
-    episode_results: list[dict[str, object]] = []
-    skipped_count = 0
-    for work_item in work_items:
-        eid = work_item.resolve_episode_id()
-        if eid is None:
-            skipped_count += 1
-            continue
-        transcription_path = audio_output_dir / eid / TRANSCRIPTION_FILE_NAME
-        if not transcription_path.exists():
-            skipped_count += 1
-            continue
-        record = work_item.to_result_metadata(eid=eid)
-        record.update(
-            {
-                "status": RESULT_STATUS_SUCCESS,
-                "cached": True,
-                "transcription_path": str(transcription_path),
-            }
-        )
-        episode_results.append(record)
-
-    return (
-        BatchAudioTranscriptionResult(
-            episode_results=episode_results,
-            success_count=len(episode_results),
-            fail_count=0,
-        ),
-        skipped_count,
-    )
 
 
 def _run_audio_company_extraction(

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
-from typing import Final
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final
 
-from podcast_job_finder.companies.episode_runner import CompletedEpisodeExtraction
 from podcast_job_finder.episode.models import EpisodeWorkItem
+
+if TYPE_CHECKING:
+    from podcast_job_finder.companies.episode_runner import CompletedEpisodeExtraction
 
 
 RESULT_STATUS_SUCCESS: Final = "success"
 RESULT_STATUS_ERROR: Final = "error"
 EPISODE_RESULT_INCOMPLETE_ERROR: Final = "节目流水线未生成完整结果。"
+
+
+@dataclass(slots=True, frozen=True)
+class BatchEpisodePipelineResult:
+    episode_results: list[dict[str, object]]
+    success_count: int
+    fail_count: int
 
 
 def build_error_result_record(
