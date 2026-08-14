@@ -14,6 +14,9 @@ from podcast_job_finder.companies.candidate_merge import (
     build_candidate_merge_prompt,
     validate_merged_result,
 )
+from podcast_job_finder.companies.evidence_validation import (
+    validate_company_evidence,
+)
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import (
     build_company_extraction_prompt,
@@ -37,6 +40,10 @@ from podcast_job_finder.episode.models import EpisodeWorkItem
 CHUNK_CHECKPOINT_KEY_TEMPLATE: Final = "chunk_{index:04d}"
 MERGE_CHECKPOINT_KEY: Final = "merge"
 INCOMPLETE_EXTRACTION_ERROR: Final = "LLM 成功结果缺少必要字段。"
+TRANSCRIPT_CHUNK_EVIDENCE_PROMPT_SUFFIX: Final = """以上待处理文本还需遵守以下规则：
+1. evidence 可以截取一段连续原文并省略前后内容，但不要改写或拼接。
+2. evidence 必须直接包含对应的 name；空格和换行可以按输出需要调整。
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +126,34 @@ def _extract_transcript_chunk(
     context: _ExtractionExecutionContext,
 ) -> tuple[CompanyExtractionResult, bool]:
     episode = EpisodeInfo(title=title, content=chunk.text)
-    prompt = build_company_extraction_prompt(episode)
+    prompt = "\n".join(
+        (
+            build_company_extraction_prompt(episode),
+            TRANSCRIPT_CHUNK_EVIDENCE_PROMPT_SUFFIX,
+        )
+    )
     return _run_cached_extraction(
         checkpoint_key=CHUNK_CHECKPOINT_KEY_TEMPLATE.format(index=chunk.index),
         prompt=prompt,
         context=context,
         company_blacklist=(),
+        result_validator=lambda result: _validate_transcript_chunk_result(
+            result,
+            title=title,
+            chunk_text=chunk.text,
+        ),
     )
+
+
+def _validate_transcript_chunk_result(
+    result: CompanyExtractionResult,
+    *,
+    title: str,
+    chunk_text: str,
+) -> None:
+    allowed_sources = (title, chunk_text)
+    for company in result.companies:
+        validate_company_evidence(company, allowed_sources)
 
 
 def _merge_company_candidates(

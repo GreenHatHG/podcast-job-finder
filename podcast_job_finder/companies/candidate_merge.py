@@ -4,6 +4,10 @@ import json
 from collections import defaultdict
 from typing import Final, Sequence
 
+from podcast_job_finder.companies.evidence_validation import (
+    find_company_name,
+    validate_company_evidence,
+)
 from podcast_job_finder.companies.models import (
     CompanyExtractionError,
     CompanyExtractionResult,
@@ -13,22 +17,22 @@ from podcast_job_finder.companies.models import (
 
 MAX_EVIDENCE_CHARS_PER_CANDIDATE: Final = 300
 MAX_EVIDENCE_COUNT_PER_NAME: Final = 2
-INVALID_MERGED_EVIDENCE_ERROR: Final = "候选合并结果包含来源不明的证据：{evidence}"
-INVALID_MERGED_NAME_ERROR: Final = "候选合并结果包含来源不明的公司名称：{name}"
+INVALID_MERGED_NAME_ERROR: Final = "候选合并结果包含候选中不存在的公司名称：{name}"
 CANDIDATE_MERGE_PROMPT_TEMPLATE: Final = """你是一个公司候选结果合并助手。
 
 以下候选结果来自同一集播客的多个连续文本块，已经按统一规则完成初步提取。同一名称只提供少量代表性原文证据。
 
 任务：
 1. 合并指向同一招聘主体的全称、简称、别名和残缺名称。
-2. 名称优先使用候选证据直接支持的最完整表达。
+2. name 必须从候选结果已有的 name 中选择，优先使用最完整的名称。
 3. 每家公司只保留一个结果。
-4. evidence 必须从候选结果的 evidence 中原样选择，不要改写或拼接。
-5. 不要增加候选结果中没有的公司。
-6. 输出必须是严格 JSON，且顶层必须是对象。
-7. JSON 结构固定为：
+4. evidence 可以从最终 name 对应的任一候选 evidence 中截取连续原文，但不要改写或拼接。
+5. evidence 必须直接包含最终采用的公司名称，不要把其他实体的证据配给它。
+6. 不要增加候选结果中没有的公司。
+7. 输出必须是严格 JSON，且顶层必须是对象。
+8. JSON 结构固定为：
 {{"companies":[{{"name":"公司名","evidence":"原文片段"}}]}}
-8. 没有候选时返回：
+9. 没有候选时返回：
 {{"companies":[]}}
 
 候选结果：
@@ -55,19 +59,18 @@ def validate_merged_result(
     result: CompanyExtractionResult,
     candidates: Sequence[CompanyMention],
 ) -> None:
-    candidate_names = {candidate.name.casefold() for candidate in candidates}
-    candidate_evidence = {candidate.evidence for candidate in candidates}
+    evidence_by_name: dict[str, list[str]] = defaultdict(list)
+    for candidate in candidates:
+        evidence_by_name[candidate.name.casefold()].append(candidate.evidence)
+
     for company in result.companies:
-        if company.evidence not in candidate_evidence:
-            raise CompanyExtractionError(
-                INVALID_MERGED_EVIDENCE_ERROR.format(evidence=company.evidence)
-            )
         normalized_name = company.name.casefold()
-        evidence_supports_name = normalized_name in company.evidence.casefold()
-        if normalized_name not in candidate_names and not evidence_supports_name:
+        matching_evidence = evidence_by_name.get(normalized_name)
+        if not matching_evidence:
             raise CompanyExtractionError(
                 INVALID_MERGED_NAME_ERROR.format(name=company.name)
             )
+        validate_company_evidence(company, matching_evidence)
 
 
 def _compact_candidates(
@@ -108,8 +111,8 @@ def _extract_evidence_excerpt(candidate: CompanyMention) -> str:
         return evidence
 
     # 优先寻找公司名的位置，让截取结果尽量同时包含公司名及其前后内容。
-    name_index = evidence.find(candidate.name)
-    if name_index < 0:
+    name_index = find_company_name(evidence, candidate.name)
+    if name_index is None:
         # 有些候选名称经过了整理，可能无法在原文中逐字找到，此时保留证据开头。
         return evidence[:MAX_EVIDENCE_CHARS_PER_CANDIDATE]
 
