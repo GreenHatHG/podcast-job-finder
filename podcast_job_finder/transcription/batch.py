@@ -105,10 +105,22 @@ def load_existing_batch_transcription_result(
     for work_item in work_items:
         eid = work_item.resolve_episode_id()
         if eid is None:
+            logger.debug(
+                "跳过已有音频转写：原因=无法解析节目 ID title=%s episode_url=%s",
+                work_item.title,
+                work_item.episode_url,
+            )
             skipped_count += 1
             continue
         transcription_path = audio_output_dir / eid / TRANSCRIPTION_FILE_NAME
         if not transcription_path.exists():
+            logger.debug(
+                "跳过已有音频转写：原因=缺少转写清单 "
+                "episode_id=%s title=%s transcription_path=%s",
+                eid,
+                work_item.title,
+                transcription_path,
+            )
             skipped_count += 1
             continue
         record = SuccessfulEpisodeTranscriptionResult(
