@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -18,6 +19,7 @@ INVALID_RATE_ENV_TEMPLATE: Final = "环境变量 {env_name} 必须是大于 0 �
 INVALID_MAX_IN_FLIGHT_REQUESTS_ENV_TEMPLATE: Final = (
     "环境变量 {env_name} 必须是大于 0 的整数。"
 )
+logger = logging.getLogger(__name__)
 
 
 class LlmClientProtocol(Protocol):
@@ -133,6 +135,7 @@ class RateLimitedLlmClient:
     def generate(self, prompt: str) -> str:
         self._request_gate.enter()
         try:
+            logger.info("LLM 请求已通过调度，开始发送...")
             return self._wrapped_client.generate(prompt)
         finally:
             self._request_gate.leave()
@@ -146,6 +149,7 @@ class RateLimitedLlmClient:
     ) -> str:
         self._request_gate.enter()
         try:
+            logger.info("LLM 请求已通过调度，开始发送...")
             return self._wrapped_client.transcribe_audio(
                 audio_data,
                 audio_format=audio_format,

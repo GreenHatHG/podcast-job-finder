@@ -174,9 +174,9 @@ def _build_float_config_error(env_name: str) -> OpenAiCompatibleConfigError:
 
 def _log_attempt(operation_name: str, attempt: int) -> None:
     if attempt == 1:
-        logger.info("%s 调用中...", operation_name)
+        logger.info("%s 等待请求调度...", operation_name)
         return
-    logger.info("%s 重试中...（第 %d 次）", operation_name, attempt)
+    logger.info("%s 重试等待请求调度...（第 %d 次）", operation_name, attempt)
 
 
 def _wait_before_retry(
