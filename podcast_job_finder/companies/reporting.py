@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Sequence
 
+from podcast_job_finder.episode.models import EpisodeResult
 from podcast_job_finder.filesystem import (
     DEFAULT_FILE_CREATION_MODE,
     atomic_write_json,
@@ -25,19 +26,28 @@ class FeedReportData:
     total: int
     success: int
     failed: int
-    episodes: list[dict]
+    episodes: Sequence[EpisodeResult]
 
 
 def save_feed_reports(report_data: FeedReportData) -> tuple[str, str]:
-    return _save_result_file(report_data), _save_summary_file(report_data)
+    episode_payloads: list[dict] = [
+        episode.to_dict() for episode in report_data.episodes
+    ]
+    return _save_result_file(report_data, episode_payloads), _save_summary_file(
+        report_data,
+        episode_payloads,
+    )
 
 
-def _save_summary_file(report_data: FeedReportData) -> str:
+def _save_summary_file(
+    report_data: FeedReportData,
+    episode_payloads: list[dict],
+) -> str:
     output_path, created_at = _build_output_file_details(
         SUMMARY_FILE_TEMPLATE,
         report_data.feed_id,
     )
-    companies = _aggregate_companies(report_data.episodes)
+    companies = _aggregate_companies(episode_payloads)
     report = _build_base_report(
         report_data=report_data,
         created_at=created_at,
@@ -86,7 +96,10 @@ def _aggregate_companies(episodes: list[dict]) -> list[dict]:
     )
 
 
-def _save_result_file(report_data: FeedReportData) -> str:
+def _save_result_file(
+    report_data: FeedReportData,
+    episode_payloads: list[dict],
+) -> str:
     output_path, created_at = _build_output_file_details(
         OUTPUT_FILE_TEMPLATE,
         report_data.feed_id,
@@ -98,7 +111,7 @@ def _save_result_file(report_data: FeedReportData) -> str:
         success_key="success",
         failed_key="failed",
     )
-    report["episodes"] = report_data.episodes
+    report["episodes"] = episode_payloads
     atomic_write_json(
         Path(output_path),
         report,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Sequence
 
@@ -47,8 +47,9 @@ from podcast_job_finder.transcription.models import (
     AudioTranscriptionResult,
 )
 from podcast_job_finder.transcription.pipeline_results import (
-    RESULT_STATUS_ERROR,
-    RESULT_STATUS_SUCCESS,
+    EpisodeTranscriptionResult,
+    FailedEpisodeTranscriptionResult,
+    SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.quality_report import (
     TRANSCRIPTION_QUALITY_REPORT_FILE_NAME,
@@ -108,7 +109,7 @@ def prepare_episode_audio(
     work_item: EpisodeWorkItem,
     audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
     resume: bool,
-) -> DownloadedEpisodeAudio | dict[str, object]:
+) -> DownloadedEpisodeAudio | EpisodeTranscriptionResult:
     """准备单个节目的本地音频，命中完整清单时直接返回成功记录。"""
 
     try:
@@ -128,7 +129,14 @@ def prepare_episode_audio(
             },
         ):
             logger.info("命中完整音频转写清单：eid=%s", context.eid)
-            return build_success_record(context, cached=True)
+            return SuccessfulEpisodeTranscriptionResult(
+                episode=replace(context.work_item, eid=context.eid),
+                cached=True,
+                transcription_path=str(context.transcription_path),
+                article_path=str(context.article_path),
+                transcription_quality_report_path=str(context.quality_report_path),
+                segment_directory=str(context.segment_dir),
+            )
 
         logger.info("下载节目音频：eid=%s title=%s", context.eid, work_item.title)
         source_url = work_item.audio_url
@@ -146,18 +154,21 @@ def prepare_episode_audio(
         )
     except EXPECTED_EPISODE_ERRORS as error:
         logger.info("节目音频准备失败：%s", error)
-        return build_error_record(work_item, str(error))
+        return FailedEpisodeTranscriptionResult(
+            episode=work_item,
+            error=str(error),
+        )
 
 
 def transcribe_prepared_episode(
-    prepared_episode: DownloadedEpisodeAudio | dict[str, object],
+    prepared_episode: DownloadedEpisodeAudio | EpisodeTranscriptionResult,
     *,
     runtime: AudioTranscriptionRuntime,
     resume: bool,
-) -> dict[str, object]:
+) -> EpisodeTranscriptionResult:
     """切分并转写已准备好的单个节目音频。"""
 
-    if isinstance(prepared_episode, dict):
+    if not isinstance(prepared_episode, DownloadedEpisodeAudio):
         return prepared_episode
 
     context = prepared_episode.context
@@ -190,10 +201,20 @@ def transcribe_prepared_episode(
             result=transcription_result,
             exported_segments=exported_segments,
         )
-        return build_success_record(context, cached=all_segments_cached)
+        return SuccessfulEpisodeTranscriptionResult(
+            episode=replace(context.work_item, eid=context.eid),
+            cached=all_segments_cached,
+            transcription_path=str(context.transcription_path),
+            article_path=str(context.article_path),
+            transcription_quality_report_path=str(context.quality_report_path),
+            segment_directory=str(context.segment_dir),
+        )
     except EXPECTED_EPISODE_ERRORS as error:
         logger.info("节目音频转写失败：%s", error)
-        return build_error_record(context.work_item, str(error))
+        return FailedEpisodeTranscriptionResult(
+            episode=context.work_item,
+            error=str(error),
+        )
 
 
 def _build_segment_checkpoint_store(
@@ -265,37 +286,3 @@ def _save_episode_transcription(
         exported_segments=exported_segments,
         result=result,
     )
-
-
-def build_success_record(
-    context: _EpisodeTranscriptionContext,
-    *,
-    cached: bool,
-) -> dict[str, object]:
-    record = context.work_item.to_result_metadata(eid=context.eid)
-    record.update(
-        {
-            "status": RESULT_STATUS_SUCCESS,
-            "cached": cached,
-            "transcription_path": str(context.transcription_path),
-            "article_path": str(context.article_path),
-            "transcription_quality_report_path": str(context.quality_report_path),
-            "segment_directory": str(context.segment_dir),
-        }
-    )
-    return record
-
-
-def build_error_record(
-    work_item: EpisodeWorkItem,
-    error_message: str,
-) -> dict[str, object]:
-    record = work_item.to_result_metadata()
-    record.update(
-        {
-            "status": RESULT_STATUS_ERROR,
-            "cached": False,
-            "error": error_message,
-        }
-    )
-    return record

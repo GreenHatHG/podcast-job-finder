@@ -15,13 +15,13 @@ from podcast_job_finder.companies.episode_runner import (
 )
 from podcast_job_finder.companies.pipeline_results import (
     EPISODE_RESULT_INCOMPLETE_ERROR,
-    RESULT_STATUS_SUCCESS,
     BatchEpisodePipelineResult,
-    build_error_result_record,
-    build_success_result_record,
+    CompanyEpisodeResult,
+    FailedCompanyEpisodeResult,
+    SuccessfulCompanyEpisodeResult,
 )
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
-from podcast_job_finder.episode.models import EpisodeWorkItem
+from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
 from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.page_loader import (
     DEFAULT_EPISODE_PAGE_LOADER,
@@ -83,7 +83,7 @@ class _FatalErrorState:
 class _PipelineSharedState:
     checkpoint_store: LlmCheckpointStore
     task_queue: queue.Queue[object]
-    episode_results: list[dict | None]
+    episode_results: list[CompanyEpisodeResult | None]
     fatal_error_state: _FatalErrorState
 
 
@@ -154,13 +154,12 @@ def _build_pipeline_result(
     if any(result is None for result in shared_state.episode_results):
         raise RuntimeError(EPISODE_RESULT_INCOMPLETE_ERROR)
 
-    finalized_results = [
+    finalized_results: list[EpisodeResult] = [
         result for result in shared_state.episode_results if result is not None
     ]
     success_count = sum(
-        1
+        isinstance(result, SuccessfulCompanyEpisodeResult)
         for result in finalized_results
-        if result.get("status") == RESULT_STATUS_SUCCESS
     )
     fail_count = len(finalized_results) - success_count
     return BatchEpisodePipelineResult(
@@ -200,7 +199,10 @@ def _produce_episode_tasks(
                 )
                 if isinstance(episode_work, CompletedEpisodeExtraction):
                     shared_state.episode_results[episode_index] = (
-                        build_success_result_record(episode_work)
+                        SuccessfulCompanyEpisodeResult(
+                            episode=episode_work.episode,
+                            extraction_result=episode_work.extraction_result,
+                        )
                     )
                     continue
 
@@ -217,9 +219,11 @@ def _produce_episode_tasks(
                 )
             except EXPECTED_EPISODE_ERRORS as error:
                 logger.info("节目生产失败：%s", error)
-                shared_state.episode_results[episode_index] = build_error_result_record(
-                    work_item=work_item,
-                    error_message=str(error),
+                shared_state.episode_results[episode_index] = (
+                    FailedCompanyEpisodeResult(
+                        episode=work_item,
+                        error=str(error),
+                    )
                 )
             finally:
                 trace_id_var.set("-")
@@ -266,14 +270,17 @@ def _consume_episode_tasks(
                     completed_extraction.extraction_result.filtered_count,
                 )
                 shared_state.episode_results[queued_work.episode_index] = (
-                    build_success_result_record(completed_extraction)
+                    SuccessfulCompanyEpisodeResult(
+                        episode=completed_extraction.episode,
+                        extraction_result=completed_extraction.extraction_result,
+                    )
                 )
             except EXPECTED_EPISODE_ERRORS as error:
                 logger.info("节目消费失败：%s", error)
                 shared_state.episode_results[queued_work.episode_index] = (
-                    build_error_result_record(
-                        work_item=queued_work.work_item,
-                        error_message=str(error),
+                    FailedCompanyEpisodeResult(
+                        episode=queued_work.work_item,
+                        error=str(error),
                     )
                 )
             finally:

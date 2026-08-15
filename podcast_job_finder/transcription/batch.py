@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Final, Sequence
 
@@ -26,8 +27,9 @@ from podcast_job_finder.transcription.episode_transcription import (
 )
 from podcast_job_finder.transcription import pipeline_results
 from podcast_job_finder.transcription.pipeline_results import (
-    RESULT_STATUS_SUCCESS,
+    EpisodeTranscriptionResult,
     BatchAudioTranscriptionResult,
+    SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
 from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
@@ -58,7 +60,7 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
 ) -> BatchAudioTranscriptionResult:
     def prepare_episode(
         work_item: EpisodeWorkItem,
-    ) -> DownloadedEpisodeAudio | dict[str, object]:
+    ) -> DownloadedEpisodeAudio | EpisodeTranscriptionResult:
         return prepare_episode_audio(
             work_item=work_item,
             audio_output_dir=audio_output_dir,
@@ -66,8 +68,8 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
         )
 
     def process_episode(
-        prepared_episode: DownloadedEpisodeAudio | dict[str, object],
-    ) -> dict[str, object]:
+        prepared_episode: DownloadedEpisodeAudio | EpisodeTranscriptionResult,
+    ) -> EpisodeTranscriptionResult:
         return transcribe_prepared_episode(
             prepared_episode,
             runtime=runtime,
@@ -81,7 +83,8 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
         process_episode=process_episode,
     )
     success_count = sum(
-        1 for result in episode_results if result.get("status") == RESULT_STATUS_SUCCESS
+        isinstance(result, SuccessfulEpisodeTranscriptionResult)
+        for result in episode_results
     )
     return BatchAudioTranscriptionResult(
         episode_results=episode_results,
@@ -97,7 +100,7 @@ def load_existing_batch_transcription_result(
 ) -> tuple[BatchAudioTranscriptionResult, int]:
     """从已有节目转写清单构造批次结果，并返回缺少清单的节目数量。"""
 
-    episode_results: list[dict[str, object]] = []
+    episode_results: list[EpisodeTranscriptionResult] = []
     skipped_count = 0
     for work_item in work_items:
         eid = work_item.resolve_episode_id()
@@ -108,13 +111,10 @@ def load_existing_batch_transcription_result(
         if not transcription_path.exists():
             skipped_count += 1
             continue
-        record = work_item.to_result_metadata(eid=eid)
-        record.update(
-            {
-                "status": RESULT_STATUS_SUCCESS,
-                "cached": True,
-                "transcription_path": str(transcription_path),
-            }
+        record = SuccessfulEpisodeTranscriptionResult(
+            episode=replace(work_item, eid=eid),
+            cached=True,
+            transcription_path=str(transcription_path),
         )
         episode_results.append(record)
 
@@ -149,7 +149,7 @@ def save_batch_audio_transcription_report(
         "total": len(result.episode_results),
         "success": result.success_count,
         "failed": result.fail_count,
-        "episodes": result.episode_results,
+        "episodes": [episode.to_dict() for episode in result.episode_results],
     }
     try:
         output_dir.mkdir(parents=True, exist_ok=True)

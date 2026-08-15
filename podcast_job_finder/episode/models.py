@@ -94,10 +94,17 @@ class EpisodeWorkItem:
             return normalized_eid
         return extract_episode_id_from_url(self.episode_url)
 
-    def to_result_metadata(self, *, eid: str | None = None) -> dict[str, object]:
+
+@dataclass(slots=True, frozen=True)
+class EpisodeResult:
+    episode: EpisodeWorkItem
+    status: str = field(init=False)
+
+    def to_dict(self) -> dict[str, object]:
         return {
-            "eid": eid or self.eid,
-            "title": self.title,
-            "pub_date": self.pub_date,
-            "episode_url": self.episode_url,
+            "eid": self.episode.eid,
+            "title": self.episode.title,
+            "pub_date": self.episode.pub_date,
+            "episode_url": self.episode.episode_url,
+            "status": self.status,
         }
