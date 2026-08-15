@@ -56,6 +56,17 @@ PROMPT_TEMPLATE = """你是一个信息抽取助手。
 待处理文本：
 {episode_text}
 """
+INVALID_RESULT_RETRY_PROMPT_TEMPLATE = """{prompt}
+
+上一次输出未通过结果校验。请根据以下错误纠正结果：
+错误原因：{error_message}
+
+上一次输出：
+{response_text}
+
+请重新检查待处理文本，修正错误后输出完整结果。仍须遵守原有全部规则，
+只输出严格 JSON，不要解释，也不要只输出修改的字段。
+"""
 INVALID_RESPONSE_ERROR = "LLM 返回结果不是合法 JSON。"
 LLM_REQUEST_RETRY_EXHAUSTED_TEMPLATE = (
     "LLM 调用连续 {max_attempts} 次失败，最后一次错误：{error_message}"
@@ -162,18 +173,27 @@ def run_company_extraction_from_prompt(
     result_validator: Callable[[CompanyExtractionResult], None] | None = None,
 ) -> CompanyExtractionAttempt:
     last_response_text: str | None = None
+    request_prompt = prompt
 
     def request_company_extraction() -> CompanyExtractionAttempt:
-        nonlocal last_response_text
+        nonlocal last_response_text, request_prompt
         last_response_text = None
-        response_text = llm.client.generate(prompt)
+        response_text = llm.client.generate(request_prompt)
         last_response_text = response_text
-        extraction_result = parse_company_extraction_output(
-            response_text,
-            company_blacklist=company_blacklist,
-        )
-        if result_validator is not None:
-            result_validator(extraction_result)
+        try:
+            extraction_result = parse_company_extraction_output(
+                response_text,
+                company_blacklist=company_blacklist,
+            )
+            if result_validator is not None:
+                result_validator(extraction_result)
+        except CompanyExtractionError as error:
+            request_prompt = _build_invalid_result_retry_prompt(
+                prompt,
+                response_text=response_text,
+                error=error,
+            )
+            raise
         return CompanyExtractionAttempt(
             response_text=response_text,
             extraction_result=extraction_result,
@@ -192,6 +212,19 @@ def run_company_extraction_from_prompt(
 
     _log_company_extraction_result(result, attempt)
     return result
+
+
+def _build_invalid_result_retry_prompt(
+    prompt: str,
+    *,
+    response_text: str,
+    error: CompanyExtractionError,
+) -> str:
+    return INVALID_RESULT_RETRY_PROMPT_TEMPLATE.format(
+        prompt=prompt,
+        error_message=str(error),
+        response_text=response_text,
+    )
 
 
 def _build_failed_company_extraction_attempt(

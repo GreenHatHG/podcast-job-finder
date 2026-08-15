@@ -39,10 +39,12 @@ def validate_company_evidence(
 
 
 def find_company_name(source_text: str, company_name: str) -> int | None:
-    folded_name = company_name.casefold()
+    folded_name = _remove_whitespace(company_name).casefold()
     folded_source_parts: list[str] = []
     source_indexes: list[int] = []
     for source_index, character in enumerate(source_text):
+        if character.isspace():
+            continue
         folded_character = character.casefold()
         folded_source_parts.append(folded_character)
         source_indexes.extend([source_index] * len(folded_character))
