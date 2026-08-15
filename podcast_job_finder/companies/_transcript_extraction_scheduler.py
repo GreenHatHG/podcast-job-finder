@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, wait
 from dataclasses import dataclass
 from typing import Final, Sequence
@@ -24,6 +25,7 @@ from podcast_job_finder.companies.transcript_extraction import (
 )
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.llm import OpenAiCompatibleLlmError
+from podcast_job_finder.progress import PercentageProgressLogger
 from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 
 
@@ -38,6 +40,9 @@ EXPECTED_EXTRACTION_TASK_ERRORS: Final = (
 
 type _LlmExtractionOutcome = tuple[CompanyExtractionResult, bool]
 type TranscriptExtractionExecutionResult = TranscriptExtractionOutcome | Exception
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -85,6 +90,16 @@ class _SubmittedChunkWork:
     chunk_index: int
 
 
+@dataclass(slots=True)
+class _ExtractionProgress:
+    progress_logger: PercentageProgressLogger
+    completed_request_count: int = 0
+
+    def record_completion(self) -> None:
+        self.completed_request_count += 1
+        self.progress_logger.update(self.completed_request_count)
+
+
 def extract_companies_from_transcripts(
     *,
     requests: Sequence[TranscriptExtractionRequest],
@@ -127,6 +142,17 @@ class _TranscriptExtractionScheduler:
             Future[_LlmExtractionOutcome], _SubmittedChunkWork
         ] = {}
         self._merge_futures: dict[Future[_LlmExtractionOutcome], int] = {}
+        self._progress = (
+            _ExtractionProgress(
+                progress_logger=PercentageProgressLogger(
+                    logger=logger,
+                    operation_name="音频公司提取",
+                    total_items=request_count,
+                )
+            )
+            if request_count > 0
+            else None
+        )
 
     def run(
         self,
@@ -150,11 +176,14 @@ class _TranscriptExtractionScheduler:
     ) -> None:
         chunks = tuple(build_transcript_chunks(request.segments))
         if not chunks:
-            self._results[episode_index] = TranscriptExtractionOutcome(
-                extraction_result=CompanyExtractionResult(),
-                chunk_count=0,
-                candidate_count=0,
-                cached=False,
+            self._record_episode_result(
+                episode_index,
+                TranscriptExtractionOutcome(
+                    extraction_result=CompanyExtractionResult(),
+                    chunk_count=0,
+                    candidate_count=0,
+                    cached=False,
+                ),
             )
             return
 
@@ -244,7 +273,7 @@ class _TranscriptExtractionScheduler:
         # 只有当前节目的全部文本块都已结束，才会进入这里。失败时直接记录错误，
         # 不再使用可能已经成功返回的部分结果。
         if state.first_error is not None:
-            self._results[episode_index] = state.first_error
+            self._record_episode_result(episode_index, state.first_error)
             return
 
         expected_chunk_indexes = {chunk.index for chunk in state.chunks}
@@ -253,7 +282,10 @@ class _TranscriptExtractionScheduler:
         # {1, 2, 3} 的三个文本块时，chunk_outcomes 也必须正好包含这三个下标；缺少
         # 某个下标或出现其他下标都表示内部记录不完整，不能继续合并候选公司。
         if set(state.chunk_outcomes) != expected_chunk_indexes:
-            self._results[episode_index] = RuntimeError(INCOMPLETE_CHUNK_RESULTS_ERROR)
+            self._record_episode_result(
+                episode_index,
+                RuntimeError(INCOMPLETE_CHUNK_RESULTS_ERROR),
+            )
             return
 
         # 后台任务可能乱序完成，这里按原文本块顺序收集候选公司，保证后续合并
@@ -271,11 +303,14 @@ class _TranscriptExtractionScheduler:
                 candidates,
                 company_blacklist=state.context.runtime.company_blacklist,
             )
-            self._results[episode_index] = TranscriptExtractionOutcome(
-                extraction_result=extraction_result,
-                chunk_count=len(state.chunks),
-                candidate_count=len(candidates),
-                cached=all(cached for _, cached in ordered_outcomes),
+            self._record_episode_result(
+                episode_index,
+                TranscriptExtractionOutcome(
+                    extraction_result=extraction_result,
+                    chunk_count=len(state.chunks),
+                    candidate_count=len(candidates),
+                    cached=all(cached for _, cached in ordered_outcomes),
+                ),
             )
             return
 
@@ -309,18 +344,30 @@ class _TranscriptExtractionScheduler:
         try:
             extraction_result, merge_cached = future.result()
         except EXPECTED_EXTRACTION_TASK_ERRORS as error:
-            self._results[episode_index] = error
+            self._record_episode_result(episode_index, error)
             return
 
         ordered_outcomes = self._ordered_chunk_outcomes(state)
-        self._results[episode_index] = TranscriptExtractionOutcome(
-            extraction_result=extraction_result,
-            chunk_count=len(state.chunks),
-            candidate_count=sum(
-                len(chunk_result.companies) for chunk_result, _ in ordered_outcomes
+        self._record_episode_result(
+            episode_index,
+            TranscriptExtractionOutcome(
+                extraction_result=extraction_result,
+                chunk_count=len(state.chunks),
+                candidate_count=sum(
+                    len(chunk_result.companies) for chunk_result, _ in ordered_outcomes
+                ),
+                cached=(all(cached for _, cached in ordered_outcomes) and merge_cached),
             ),
-            cached=(all(cached for _, cached in ordered_outcomes) and merge_cached),
         )
+
+    def _record_episode_result(
+        self,
+        episode_index: int,
+        result: TranscriptExtractionExecutionResult,
+    ) -> None:
+        self._results[episode_index] = result
+        if self._progress is not None:
+            self._progress.record_completion()
 
     @staticmethod
     def _ordered_chunk_outcomes(
