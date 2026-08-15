@@ -71,9 +71,6 @@ TRANSCRIBE_ONLY_SOURCE_ERROR: Final = (
 )
 EXTRACT_ONLY_SOURCE_ERROR: Final = "--extract-only 只能与 --source audio 一起使用。"
 EXCLUSIVE_AUDIO_MODE_ERROR: Final = "--transcribe-only 和 --extract-only 不能同时使用。"
-EXTRACT_ONLY_RESUME_ERROR: Final = (
-    "--resume 不能与 --extract-only 同时使用；公司提取会自动复用成功检查点。"
-)
 RESUME_SOURCE_ERROR: Final = "--resume 只能与 --source audio 一起使用。"
 
 logger = logging.getLogger(__name__)
@@ -129,8 +126,6 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
         raise CliUsageError(EXTRACT_ONLY_SOURCE_ERROR)
     if parsed_args.resume and parsed_args.source != AUDIO_SOURCE:
         raise CliUsageError(RESUME_SOURCE_ERROR)
-    if parsed_args.extract_only and parsed_args.resume:
-        raise CliUsageError(EXTRACT_ONLY_RESUME_ERROR)
     if not parsed_args.feed_url:
         raise CliUsageError(COMMAND_USAGE_TEXT)
 
@@ -156,7 +151,11 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
 
     if parsed_args.source == AUDIO_SOURCE:
         if parsed_args.extract_only:
-            return _run_feed_audio_extraction_only(feed, work_items)
+            return _run_feed_audio_extraction_only(
+                feed,
+                work_items,
+                resume=parsed_args.resume,
+            )
         return _run_feed_audio_mode(
             feed,
             work_items,
@@ -249,12 +248,18 @@ def _run_feed_audio_mode(
     if transcribe_only:
         return 1 if transcription_result.fail_count > 0 else 0
 
-    return _run_audio_company_extraction(feed, transcription_result)
+    return _run_audio_company_extraction(
+        feed,
+        transcription_result,
+        resume=resume,
+    )
 
 
 def _run_feed_audio_extraction_only(
     feed: RssFeed,
     work_items: Sequence[EpisodeWorkItem],
+    *,
+    resume: bool,
 ) -> int:
     transcription_result, skipped_count = load_existing_batch_transcription_result(
         work_items
@@ -264,17 +269,24 @@ def _run_feed_audio_extraction_only(
         transcription_result.success_count,
         skipped_count,
     )
-    return _run_audio_company_extraction(feed, transcription_result)
+    return _run_audio_company_extraction(
+        feed,
+        transcription_result,
+        resume=resume,
+    )
 
 
 def _run_audio_company_extraction(
     feed: RssFeed,
     transcription_result: BatchAudioTranscriptionResult,
+    *,
+    resume: bool,
 ) -> int:
     extraction_runtime = load_audio_extraction_runtime_from_env()
     extraction_result = run_batch_audio_company_extraction(
         transcription_result=transcription_result,
         runtime=extraction_runtime,
+        resume=resume,
     )
     output_path, summary_path = save_feed_reports(
         FeedReportData(

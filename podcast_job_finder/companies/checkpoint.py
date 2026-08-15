@@ -37,24 +37,26 @@ class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
     episode_url: str
     title: str | None
     pub_date: str | None
-    runtime_signature: str
+    runtime_signature: str | None
     companies: list[dict]
     filtered_count: int
     error: str | None
     updated_at: str
 
     def to_dict(self) -> dict:
-        return {
+        payload: dict[str, object] = {
             "status": self.status,
             "episode_url": self.episode_url,
             "title": self.title,
             "pub_date": self.pub_date,
-            "runtime_signature": self.runtime_signature,
             "companies": self.companies,
             "filtered_count": self.filtered_count,
             "error": self.error,
             "updated_at": self.updated_at,
         }
+        if self.runtime_signature is not None:
+            payload["runtime_signature"] = self.runtime_signature
+        return payload
 
     @classmethod
     def from_dict(cls, payload: object) -> "LlmCheckpointState":
@@ -66,9 +68,9 @@ class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
             payload.get("episode_url"),
             "检查点缺少有效的 episode_url。",
         )
-        runtime_signature = _require_non_empty_checkpoint_text(
+        runtime_signature = _require_optional_checkpoint_text(
             payload.get("runtime_signature"),
-            "检查点缺少有效的 runtime_signature。",
+            "检查点中的 runtime_signature 必须是字符串或 null。",
         )
         filtered_count = _require_checkpoint_integer(
             payload.get("filtered_count"),
@@ -161,7 +163,7 @@ class LlmCheckpointSavePayload:
     episode_url: str
     title: str | None
     pub_date: str | None
-    runtime_signature: str
+    runtime_signature: str | None
     prompt_text: str
 
 

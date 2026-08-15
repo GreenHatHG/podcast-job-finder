@@ -62,9 +62,11 @@ def run_batch_audio_company_extraction(
     # 节目在调用本函数前已经被跳过。该对象不包含 RssFeed 对象本身。
     transcription_result: BatchAudioTranscriptionResult,
     runtime: EpisodeExtractionRuntime,
+    resume: bool = False,
 ) -> BatchEpisodePipelineResult:
     episode_results, prepared_extractions = _prepare_extraction_batch(
-        transcription_result.episode_results
+        transcription_result.episode_results,
+        resume=resume,
     )
 
     if prepared_extractions:
@@ -106,6 +108,8 @@ def run_batch_audio_company_extraction(
 
 def _prepare_extraction_batch(
     episode_transcriptions: list[EpisodeTranscriptionResult],
+    *,
+    resume: bool,
 ) -> tuple[list[EpisodeResult | None], list[_PreparedExtraction]]:
     episode_results: list[EpisodeResult | None] = [None] * len(episode_transcriptions)
     prepared_extractions: list[_PreparedExtraction] = []
@@ -118,7 +122,10 @@ def _prepare_extraction_batch(
             episode_results[record_index] = episode_transcription
             continue
         try:
-            request = _prepare_extraction_request(episode_transcription)
+            request = _prepare_extraction_request(
+                episode_transcription,
+                resume=resume,
+            )
         except EXPECTED_PREPARATION_ERRORS as error:
             episode_results[record_index] = _build_error_result(
                 episode_transcription,
@@ -131,6 +138,8 @@ def _prepare_extraction_batch(
 
 def _prepare_extraction_request(
     episode_transcription: SuccessfulEpisodeTranscriptionResult,
+    *,
+    resume: bool,
 ) -> TranscriptExtractionRequest:
     transcription_path = _require_path(episode_transcription.transcription_path)
     work_item = _build_work_item(episode_transcription.episode)
@@ -143,6 +152,7 @@ def _prepare_extraction_request(
         title=manifest.title or work_item.title or "",
         segments=manifest.segments,
         checkpoint_store=LlmCheckpointStore(str(checkpoint_root)),
+        resume=resume,
     )
 
 

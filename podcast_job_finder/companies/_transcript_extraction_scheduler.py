@@ -47,6 +47,7 @@ class TranscriptExtractionRequest:
     title: str
     segments: tuple[TranscribedSpeechSegment, ...]
     checkpoint_store: LlmCheckpointStore
+    resume: bool = False
 
 
 @dataclass(slots=True)
@@ -170,6 +171,7 @@ class _TranscriptExtractionScheduler:
                 work_item=request.work_item,
                 runtime=self._runtime,
                 checkpoint_store=request.checkpoint_store,
+                resume=request.resume,
             ),
             title=request.title,
             chunks=chunks,
