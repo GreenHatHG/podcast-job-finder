@@ -47,9 +47,10 @@ def run_batch_audio_company_extraction(
     *,
     transcription_result: BatchAudioTranscriptionResult,
     runtime: EpisodeExtractionRuntime,
+    resume: bool = False,
 ) -> BatchEpisodePipelineResult:
     episode_results = [
-        _extract_episode_record(record, runtime=runtime)
+        _extract_episode_record(record, runtime=runtime, resume=resume)
         if record.get("status") == RESULT_STATUS_SUCCESS
         else dict(record)
         for record in transcription_result.episode_results
@@ -68,6 +69,7 @@ def _extract_episode_record(
     record: dict[str, object],
     *,
     runtime: EpisodeExtractionRuntime,
+    resume: bool,
 ) -> dict[str, object]:
     try:
         transcription_path = _require_path(record.get("transcription_path"))
@@ -81,6 +83,7 @@ def _extract_episode_record(
             checkpoint_store=LlmCheckpointStore(
                 str(transcription_path.parent / COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME)
             ),
+            resume=resume,
         )
         result = dict(record)
         result.update(

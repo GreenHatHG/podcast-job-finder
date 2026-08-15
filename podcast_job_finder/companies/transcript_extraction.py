@@ -7,6 +7,7 @@ from typing import Callable, Final, Sequence
 from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 from podcast_job_finder.companies.checkpoint import (
     STATUS_SUCCESS,
+    LlmCheckpoint,
     LlmCheckpointSavePayload,
     LlmCheckpointStore,
 )
@@ -32,7 +33,6 @@ from podcast_job_finder.companies.transcript_chunks import (
     TranscriptChunk,
     build_transcript_chunks,
 )
-from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.episode import EpisodeInfo
 from podcast_job_finder.episode.models import EpisodeWorkItem
 
@@ -61,8 +61,10 @@ class _ExtractionExecutionContext:
     work_item: EpisodeWorkItem
     runtime: EpisodeExtractionRuntime
     checkpoint_store: LlmCheckpointStore
+    resume: bool
 
 
+# pylint: disable-next=too-many-arguments,too-many-locals
 def extract_companies_from_transcript(
     *,
     work_item: EpisodeWorkItem,
@@ -70,6 +72,7 @@ def extract_companies_from_transcript(
     segments: Sequence[TranscribedSpeechSegment],
     runtime: EpisodeExtractionRuntime,
     checkpoint_store: LlmCheckpointStore,
+    resume: bool = False,
 ) -> TranscriptExtractionOutcome:
     chunks = build_transcript_chunks(segments)
     if not chunks:
@@ -84,6 +87,7 @@ def extract_companies_from_transcript(
         work_item=work_item,
         runtime=runtime,
         checkpoint_store=checkpoint_store,
+        resume=resume,
     )
     chunk_results: list[CompanyExtractionResult] = []
     all_cached = True
@@ -183,17 +187,14 @@ def _run_cached_extraction(
     result_validator: Callable[[CompanyExtractionResult], None] | None = None,
 ) -> tuple[CompanyExtractionResult, bool]:
     runtime = context.runtime
-    runtime_signature = _build_prompt_runtime_signature(
-        runtime,
-        prompt,
-        company_blacklist=company_blacklist,
-    )
-    cached_result = _load_cached_result(
-        checkpoint_key=checkpoint_key,
-        runtime_signature=runtime_signature,
-        checkpoint_store=context.checkpoint_store,
-        result_validator=result_validator,
-    )
+    cached_result = None
+    if context.resume:
+        cached_result = _load_cached_result(
+            checkpoint_key=checkpoint_key,
+            episode_url=context.work_item.episode_url,
+            checkpoint_store=context.checkpoint_store,
+            result_validator=result_validator,
+        )
     if cached_result is not None:
         logger.info("命中音频公司提取检查点：key=%s", checkpoint_key)
         return cached_result, True
@@ -203,7 +204,7 @@ def _run_cached_extraction(
         episode_url=context.work_item.episode_url,
         title=context.work_item.title,
         pub_date=context.work_item.pub_date,
-        runtime_signature=runtime_signature,
+        runtime_signature=None,
         prompt_text=prompt,
     )
     context.checkpoint_store.save_prepared(payload)
@@ -234,16 +235,23 @@ def _run_cached_extraction(
 def _load_cached_result(
     *,
     checkpoint_key: str,
-    runtime_signature: str,
+    episode_url: str,
     checkpoint_store: LlmCheckpointStore,
     result_validator: Callable[[CompanyExtractionResult], None] | None,
 ) -> CompanyExtractionResult | None:
     checkpoint = checkpoint_store.load(checkpoint_key)
     if checkpoint is None:
         return None
-    if checkpoint.state.runtime_signature != runtime_signature:
-        return None
-    if checkpoint.state.status != STATUS_SUCCESS:
+    invalid_reason = _find_invalid_checkpoint_reason(
+        checkpoint,
+        expected_episode_url=episode_url,
+    )
+    if invalid_reason is not None:
+        logger.info(
+            "音频公司提取检查点不可用，将重新执行：key=%s reason=%s",
+            checkpoint_key,
+            invalid_reason,
+        )
         return None
     result = CompanyExtractionResult.from_dict(
         {
@@ -265,24 +273,17 @@ def _load_cached_result(
     return result
 
 
-def _build_prompt_runtime_signature(
-    runtime: EpisodeExtractionRuntime,
-    prompt: str,
+def _find_invalid_checkpoint_reason(
+    checkpoint: LlmCheckpoint,
     *,
-    company_blacklist: Sequence[str],
-) -> str:
-    return build_runtime_signature_hash(
-        {
-            "model": runtime.llm.model,
-            "base_url": runtime.llm.base_url,
-            "api_style": runtime.llm.api_style,
-            "company_blacklist": sorted(
-                {
-                    company_name.strip().casefold()
-                    for company_name in company_blacklist
-                    if company_name.strip()
-                }
-            ),
-            "prompt": prompt,
-        }
-    )
+    expected_episode_url: str,
+) -> str | None:
+    if checkpoint.state.status != STATUS_SUCCESS:
+        return "状态不是 success"
+    if not checkpoint.prompt_text or not checkpoint.prompt_text.strip():
+        return "缺少非空的 llm_prompt.txt"
+    if not checkpoint.response_text or not checkpoint.response_text.strip():
+        return "缺少非空的 llm_response.txt"
+    if checkpoint.state.episode_url != expected_episode_url:
+        return "episode_url 已变化"
+    return None
