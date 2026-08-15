@@ -24,7 +24,7 @@ from podcast_job_finder.companies.transcript_extraction import (
 from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
 from podcast_job_finder.transcription.manifest import (
     TranscriptionManifestError,
-    load_episode_transcription_manifest,
+    load_episode_transcript,
 )
 from podcast_job_finder.transcription.pipeline_results import (
     BatchAudioTranscriptionResult,
@@ -111,6 +111,10 @@ def _prepare_extraction_batch(
     *,
     resume: bool,
 ) -> tuple[list[EpisodeResult | None], list[_PreparedExtraction]]:
+    logger.info(
+        "开始准备音频公司提取：节目数=%d",
+        len(episode_transcriptions),
+    )
     episode_results: list[EpisodeResult | None] = [None] * len(episode_transcriptions)
     prepared_extractions: list[_PreparedExtraction] = []
 
@@ -133,6 +137,12 @@ def _prepare_extraction_batch(
             )
             continue
         prepared_extractions.append((record_index, episode_transcription, request))
+    logger.info(
+        "音频公司提取准备完成：节目数=%d 可提取=%d 失败=%d",
+        len(episode_transcriptions),
+        len(prepared_extractions),
+        sum(result is not None for result in episode_results),
+    )
     return episode_results, prepared_extractions
 
 
@@ -143,14 +153,14 @@ def _prepare_extraction_request(
 ) -> TranscriptExtractionRequest:
     transcription_path = _require_path(episode_transcription.transcription_path)
     work_item = _build_work_item(episode_transcription.episode)
-    manifest = load_episode_transcription_manifest(transcription_path)
+    transcript = load_episode_transcript(transcription_path)
     checkpoint_root = (
         transcription_path.parent / COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME
     ).resolve()
     return TranscriptExtractionRequest(
         work_item=work_item,
-        title=manifest.title or work_item.title or "",
-        segments=manifest.segments,
+        title=transcript.title or work_item.title or "",
+        segments=transcript.segments,
         checkpoint_store=LlmCheckpointStore(str(checkpoint_root)),
         resume=resume,
     )

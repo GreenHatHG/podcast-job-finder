@@ -40,6 +40,12 @@ class EpisodeTranscriptionManifest:
     metadata: Mapping[str, object]
 
 
+@dataclass(slots=True, frozen=True)
+class EpisodeTranscript:
+    title: str
+    segments: tuple[TranscribedSpeechSegment, ...]
+
+
 def save_audio_transcription_manifest(
     path: Path,
     *,
@@ -69,6 +75,36 @@ def load_episode_transcription_manifest(
     path: Path,
 ) -> EpisodeTranscriptionManifest:
     payload = _read_manifest_payload(path)
+    title, raw_segments = _parse_manifest_transcript_fields(payload, path=path)
+    assert isinstance(payload, dict)
+    return EpisodeTranscriptionManifest(
+        title=title,
+        segments=tuple(
+            parse_transcribed_segment(raw_segment, path=path, index=index)
+            for index, raw_segment in enumerate(raw_segments)
+        ),
+        metadata=payload,
+    )
+
+
+def load_episode_transcript(path: Path) -> EpisodeTranscript:
+    """读取后续文本处理需要的标题和分段文本，忽略时间戳等转写细节。"""
+    payload = _read_manifest_payload(path)
+    title, raw_segments = _parse_manifest_transcript_fields(payload, path=path)
+    return EpisodeTranscript(
+        title=title,
+        segments=tuple(
+            _parse_transcript_segment(raw_segment, path=path, index=index)
+            for index, raw_segment in enumerate(raw_segments)
+        ),
+    )
+
+
+def _parse_manifest_transcript_fields(
+    payload: object,
+    *,
+    path: Path,
+) -> tuple[str, list[object]]:
     if not isinstance(payload, dict):
         raise TranscriptionManifestError(INVALID_MANIFEST_ERROR.format(path=path))
 
@@ -78,14 +114,7 @@ def load_episode_transcription_manifest(
 
     raw_title = payload.get("title")
     title = raw_title.strip() if isinstance(raw_title, str) else ""
-    return EpisodeTranscriptionManifest(
-        title=title,
-        segments=tuple(
-            parse_transcribed_segment(raw_segment, path=path, index=index)
-            for index, raw_segment in enumerate(raw_segments)
-        ),
-        metadata=payload,
-    )
+    return title, raw_segments
 
 
 def _build_segment_records(
@@ -128,6 +157,57 @@ def parse_transcribed_segment(
     path: Path,
     index: int,
 ) -> TranscribedSpeechSegment:
+    segment_index, start_ms, end_ms, text = _parse_transcript_segment_fields(
+        payload,
+        path=path,
+        index=index,
+    )
+    assert isinstance(payload, dict)
+    try:
+        return TranscribedSpeechSegment(
+            index=segment_index,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            text=text,
+            character_timestamps=parse_timed_transcription_texts(
+                payload.get("character_timestamps"),
+                field_name="character_timestamps",
+            ),
+            sentences=parse_timed_transcription_texts(
+                payload.get("sentences"),
+                field_name="sentences",
+            ),
+            diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
+        )
+    except ValueError as error:
+        raise _build_invalid_segment_error(path, index) from error
+
+
+def _parse_transcript_segment(
+    payload: object,
+    *,
+    path: Path,
+    index: int,
+) -> TranscribedSpeechSegment:
+    segment_index, start_ms, end_ms, text = _parse_transcript_segment_fields(
+        payload,
+        path=path,
+        index=index,
+    )
+    return TranscribedSpeechSegment(
+        index=segment_index,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        text=text,
+    )
+
+
+def _parse_transcript_segment_fields(
+    payload: object,
+    *,
+    path: Path,
+    index: int,
+) -> tuple[int, int, int, str]:
     if not isinstance(payload, dict):
         raise _build_invalid_segment_error(path, index)
 
@@ -143,24 +223,7 @@ def parse_transcribed_segment(
         raise _build_invalid_segment_error(path, index)
     if not isinstance(text, str):
         raise _build_invalid_segment_error(path, index)
-    try:
-        return TranscribedSpeechSegment(
-            index=segment_index,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            text=text.strip(),
-            character_timestamps=parse_timed_transcription_texts(
-                payload.get("character_timestamps"),
-                field_name="character_timestamps",
-            ),
-            sentences=parse_timed_transcription_texts(
-                payload.get("sentences"),
-                field_name="sentences",
-            ),
-            diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
-        )
-    except ValueError as error:
-        raise _build_invalid_segment_error(path, index) from error
+    return segment_index, start_ms, end_ms, text.strip()
 
 
 def _is_integer(value: object) -> TypeGuard[int]:
