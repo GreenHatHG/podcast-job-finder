@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Final, Protocol, Sequence
 
@@ -85,6 +86,7 @@ def format_transcription_segments(
     *,
     llm_client: TextGenerationClientProtocol,
     retry_config: LlmRetryConfig | None = None,
+    max_workers: int = 1,
 ) -> FormattedTranscription:
     ordered_segments = tuple(
         segment
@@ -94,15 +96,18 @@ def format_transcription_segments(
     if not ordered_segments:
         raise TranscriptionFormattingError(EMPTY_TRANSCRIPTION_ERROR)
     chunks = _build_formatting_chunks(ordered_segments)
-    formatted_chunks = [
-        _format_chunk(
-            chunk,
-            total_chunks=len(chunks),
-            llm_client=llm_client,
-            retry_config=retry_config,
-        )
-        for chunk in chunks
-    ]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                _format_chunk,
+                chunk,
+                total_chunks=len(chunks),
+                llm_client=llm_client,
+                retry_config=retry_config,
+            )
+            for chunk in chunks
+        ]
+        formatted_chunks = [future.result() for future in futures]
 
     transcription = _merge_formatted_chunks(formatted_chunks)
     logger.info("%s", build_human_audit_report(transcription))
