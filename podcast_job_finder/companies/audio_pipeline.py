@@ -1,33 +1,35 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Final
 
-from podcast_job_finder.transcription.pipeline_results import (
-    BatchAudioTranscriptionResult,
-    SuccessfulEpisodeTranscriptionResult,
+from podcast_job_finder.companies._transcript_extraction_scheduler import (
+    TranscriptExtractionExecutionResult,
+    TranscriptExtractionRequest,
+    extract_companies_from_transcripts,
 )
+from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
+from podcast_job_finder.companies.pipeline_results import (
+    EPISODE_RESULT_INCOMPLETE_ERROR,
+    BatchEpisodePipelineResult,
+    FailedCompanyEpisodeResult,
+    SuccessfulCompanyEpisodeResult,
+)
+from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
+from podcast_job_finder.companies.transcript_extraction import (
+    TranscriptExtractionOutcome,
+)
+from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
 from podcast_job_finder.transcription.manifest import (
     TranscriptionManifestError,
     load_episode_transcription_manifest,
 )
-from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
-from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
-from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
-from podcast_job_finder.companies.models import CompanyExtractionError
-from podcast_job_finder.companies.pipeline_results import (
-    BatchEpisodePipelineResult,
-    CompanyEpisodeResult,
-    FailedCompanyEpisodeResult,
-    SuccessfulCompanyEpisodeResult,
-)
-from podcast_job_finder.companies.transcript_extraction import (
-    extract_companies_from_transcript,
-)
-from podcast_job_finder.llm import (
-    EmptyLlmResponseError,
-    OpenAiCompatibleLlmError,
+from podcast_job_finder.transcription.pipeline_results import (
+    BatchAudioTranscriptionResult,
+    EpisodeTranscriptionResult,
+    SuccessfulEpisodeTranscriptionResult,
 )
 
 
@@ -35,90 +37,166 @@ COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME: Final = "company_extraction"
 INVALID_TRANSCRIPTION_PATH_ERROR: Final = "节目结果缺少有效的 transcription_path。"
 INVALID_EPISODE_URL_ERROR: Final = "节目结果缺少有效的 episode_url。"
 
-EXPECTED_EXTRACTION_ERRORS: Final = (
-    CompanyExtractionError,
-    EmptyLlmResponseError,
-    OpenAiCompatibleLlmError,
+EXPECTED_PREPARATION_ERRORS: Final = (
     TranscriptionManifestError,
     OSError,
     ValueError,
 )
+
+type _PreparedExtraction = tuple[
+    int,
+    SuccessfulEpisodeTranscriptionResult,
+    TranscriptExtractionRequest,
+]
 
 logger = logging.getLogger(__name__)
 
 
 def run_batch_audio_company_extraction(
     *,
+    # 普通音频模式会传入本次从 RSS 选中的节目，--max-episodes 可以限制节目数量。
+    # 转写成功的结果包含 transcription_path，会继续读取转写文本并提取公司；转写
+    # 失败的结果只用于在最终报告中保留失败原因，进入本函数后会直接跳过，不会读取
+    # 转写文本，也不会发送公司提取的 LLM 请求。
+    # --extract-only 模式只传入已经存在 transcription.json 的节目；缺少该文件的
+    # 节目在调用本函数前已经被跳过。该对象不包含 RssFeed 对象本身。
     transcription_result: BatchAudioTranscriptionResult,
     runtime: EpisodeExtractionRuntime,
 ) -> BatchEpisodePipelineResult:
-    episode_results: list[EpisodeResult] = []
-    for transcription_episode_result in transcription_result.episode_results:
-        if isinstance(
-            transcription_episode_result,
-            SuccessfulEpisodeTranscriptionResult,
-        ):
-            episode_results.append(
-                _extract_episode_result(
-                    transcription_episode_result,
-                    runtime=runtime,
-                )
+    episode_results, prepared_extractions = _prepare_extraction_batch(
+        transcription_result.episode_results
+    )
+
+    if prepared_extractions:
+        with ThreadPoolExecutor(
+            max_workers=runtime.llm.max_in_flight_requests
+        ) as request_executor:
+            execution_results = extract_companies_from_transcripts(
+                requests=[prepared[2] for prepared in prepared_extractions],
+                runtime=runtime,
+                request_executor=request_executor,
             )
-        else:
-            episode_results.append(transcription_episode_result)
+        for prepared, execution_result in zip(
+            prepared_extractions,
+            execution_results,
+            strict=True,
+        ):
+            record_index, episode_transcription, request = prepared
+            episode_results[record_index] = _build_execution_result(
+                episode_transcription,
+                work_item=request.work_item,
+                execution_result=execution_result,
+            )
+
+    if any(result is None for result in episode_results):
+        raise RuntimeError(EPISODE_RESULT_INCOMPLETE_ERROR)
+    finalized_results: list[EpisodeResult] = [
+        result for result in episode_results if result is not None
+    ]
     success_count = sum(
-        isinstance(result, SuccessfulCompanyEpisodeResult) for result in episode_results
+        isinstance(result, SuccessfulCompanyEpisodeResult)
+        for result in finalized_results
     )
     return BatchEpisodePipelineResult(
-        episode_results=episode_results,
+        episode_results=finalized_results,
         success_count=success_count,
-        fail_count=len(episode_results) - success_count,
+        fail_count=len(finalized_results) - success_count,
     )
 
 
-def _extract_episode_result(
-    transcription_result: SuccessfulEpisodeTranscriptionResult,
+def _prepare_extraction_batch(
+    episode_transcriptions: list[EpisodeTranscriptionResult],
+) -> tuple[list[EpisodeResult | None], list[_PreparedExtraction]]:
+    episode_results: list[EpisodeResult | None] = [None] * len(episode_transcriptions)
+    prepared_extractions: list[_PreparedExtraction] = []
+
+    for record_index, episode_transcription in enumerate(episode_transcriptions):
+        if not isinstance(
+            episode_transcription,
+            SuccessfulEpisodeTranscriptionResult,
+        ):
+            episode_results[record_index] = episode_transcription
+            continue
+        try:
+            request = _prepare_extraction_request(episode_transcription)
+        except EXPECTED_PREPARATION_ERRORS as error:
+            episode_results[record_index] = _build_error_result(
+                episode_transcription,
+                error,
+            )
+            continue
+        prepared_extractions.append((record_index, episode_transcription, request))
+    return episode_results, prepared_extractions
+
+
+def _prepare_extraction_request(
+    episode_transcription: SuccessfulEpisodeTranscriptionResult,
+) -> TranscriptExtractionRequest:
+    transcription_path = _require_path(episode_transcription.transcription_path)
+    work_item = _build_work_item(episode_transcription.episode)
+    manifest = load_episode_transcription_manifest(transcription_path)
+    checkpoint_root = (
+        transcription_path.parent / COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME
+    ).resolve()
+    return TranscriptExtractionRequest(
+        work_item=work_item,
+        title=manifest.title or work_item.title or "",
+        segments=manifest.segments,
+        checkpoint_store=LlmCheckpointStore(str(checkpoint_root)),
+    )
+
+
+def _build_execution_result(
+    episode_transcription: SuccessfulEpisodeTranscriptionResult,
     *,
-    runtime: EpisodeExtractionRuntime,
-) -> CompanyEpisodeResult:
-    try:
-        transcription_path = _require_path(transcription_result.transcription_path)
-        work_item = _build_work_item(transcription_result.episode)
-        manifest = load_episode_transcription_manifest(transcription_path)
-        outcome = extract_companies_from_transcript(
-            work_item=work_item,
-            title=manifest.title or work_item.title or "",
-            segments=manifest.segments,
-            runtime=runtime,
-            checkpoint_store=LlmCheckpointStore(
-                str(transcription_path.parent / COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME)
-            ),
-        )
-        logger.info(
-            "音频公司提取完成：eid=%s chunks=%d companies=%d",
-            transcription_result.episode.eid,
-            outcome.chunk_count,
-            len(outcome.extraction_result.companies),
-        )
-        return SuccessfulCompanyEpisodeResult(
-            episode=work_item,
-            extraction_result=outcome.extraction_result,
-            transcription_result=transcription_result,
-            extraction_chunk_count=outcome.chunk_count,
-            candidate_company_count=outcome.candidate_count,
-            extraction_cached=outcome.cached,
-        )
-    except EXPECTED_EXTRACTION_ERRORS as error:
-        logger.info(
-            "音频公司提取失败：eid=%s error=%s",
-            transcription_result.episode.eid,
-            error,
-        )
-        return FailedCompanyEpisodeResult(
-            episode=transcription_result.episode,
-            error=str(error),
-            transcription_result=transcription_result,
-        )
+    work_item: EpisodeWorkItem,
+    execution_result: TranscriptExtractionExecutionResult,
+) -> EpisodeResult:
+    if isinstance(execution_result, Exception):
+        return _build_error_result(episode_transcription, execution_result)
+    return _build_success_result(
+        episode_transcription,
+        work_item=work_item,
+        outcome=execution_result,
+    )
+
+
+def _build_success_result(
+    episode_transcription: SuccessfulEpisodeTranscriptionResult,
+    *,
+    work_item: EpisodeWorkItem,
+    outcome: TranscriptExtractionOutcome,
+) -> SuccessfulCompanyEpisodeResult:
+    logger.info(
+        "音频公司提取完成：eid=%s chunks=%d companies=%d",
+        episode_transcription.episode.eid,
+        outcome.chunk_count,
+        len(outcome.extraction_result.companies),
+    )
+    return SuccessfulCompanyEpisodeResult(
+        episode=work_item,
+        extraction_result=outcome.extraction_result,
+        transcription_result=episode_transcription,
+        extraction_chunk_count=outcome.chunk_count,
+        candidate_company_count=outcome.candidate_count,
+        extraction_cached=outcome.cached,
+    )
+
+
+def _build_error_result(
+    episode_transcription: SuccessfulEpisodeTranscriptionResult,
+    error: Exception,
+) -> FailedCompanyEpisodeResult:
+    logger.info(
+        "音频公司提取失败：eid=%s error=%s",
+        episode_transcription.episode.eid,
+        error,
+    )
+    return FailedCompanyEpisodeResult(
+        episode=episode_transcription.episode,
+        error=str(error),
+        transcription_result=episode_transcription,
+    )
 
 
 def _require_path(value: str) -> Path:

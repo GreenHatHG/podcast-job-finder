@@ -127,6 +127,7 @@ def _format_transcription(
         segments,
         llm_client=formatting_runtime.client,
         retry_config=formatting_runtime.retry_config,
+        max_workers=formatting_runtime.max_in_flight_requests,
     )
     formatted_article_path = output_dir / FORMATTED_TRANSCRIPTION_ARTICLE_FILE_NAME
     save_transcription_article(
