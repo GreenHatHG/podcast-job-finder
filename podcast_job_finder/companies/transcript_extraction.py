@@ -168,16 +168,22 @@ def _run_cached_extraction(
     result_validator: Callable[[CompanyExtractionResult], None] | None = None,
 ) -> tuple[CompanyExtractionResult, bool]:
     runtime = context.runtime
+    episode_id = context.work_item.resolve_episode_id()
     cached_result = None
     if context.resume:
         cached_result = _load_cached_result(
             checkpoint_key=checkpoint_key,
+            episode_id=episode_id,
             episode_url=context.work_item.episode_url,
             checkpoint_store=context.checkpoint_store,
             result_validator=result_validator,
         )
     if cached_result is not None:
-        logger.info("命中音频公司提取检查点：key=%s", checkpoint_key)
+        logger.info(
+            "命中音频公司提取检查点：eid=%s key=%s",
+            episode_id,
+            checkpoint_key,
+        )
         return cached_result, True
 
     payload = LlmCheckpointSavePayload(
@@ -216,6 +222,7 @@ def _run_cached_extraction(
 def _load_cached_result(
     *,
     checkpoint_key: str,
+    episode_id: str | None,
     episode_url: str,
     checkpoint_store: LlmCheckpointStore,
     result_validator: Callable[[CompanyExtractionResult], None] | None,
@@ -229,7 +236,8 @@ def _load_cached_result(
     )
     if invalid_reason is not None:
         logger.info(
-            "音频公司提取检查点不可用，将重新执行：key=%s reason=%s",
+            "音频公司提取检查点不可用，将重新执行：eid=%s key=%s reason=%s",
+            episode_id,
             checkpoint_key,
             invalid_reason,
         )
@@ -246,7 +254,8 @@ def _load_cached_result(
         result_validator(result)
     except CompanyExtractionError as error:
         logger.info(
-            "音频公司提取检查点未通过结果校验，将重新执行：key=%s error=%s",
+            "音频公司提取检查点未通过结果校验，将重新执行：eid=%s key=%s error=%s",
+            episode_id,
             checkpoint_key,
             error,
         )
