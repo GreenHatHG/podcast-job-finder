@@ -13,6 +13,7 @@ from podcast_job_finder.llm.config import (
 )
 from podcast_job_finder.llm.errors import OpenAiCompatibleConfigError
 from podcast_job_finder.llm.rate_limit import (
+    DEFAULT_MAX_IN_FLIGHT_REQUESTS,
     RateLimitedLlmClient,
     format_rate,
     load_llm_max_in_flight_requests_from_env,
@@ -45,7 +46,7 @@ class LlmRuntime:
     model: str
     base_url: str | None
     api_style: str
-    max_in_flight_requests: int
+    max_in_flight_requests: int = DEFAULT_MAX_IN_FLIGHT_REQUESTS
 
 
 def load_llm_runtime_from_env(env_prefix: str) -> LlmRuntime:

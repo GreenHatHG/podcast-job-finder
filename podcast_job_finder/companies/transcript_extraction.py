@@ -29,6 +29,7 @@ from podcast_job_finder.companies.transcript_chunks import (
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.episode import EpisodeInfo
 from podcast_job_finder.episode.models import EpisodeWorkItem
+from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 
 
 CHUNK_CHECKPOINT_KEY_TEMPLATE: Final = "chunk_{index:04d}"
@@ -51,6 +52,45 @@ class _ExtractionExecutionContext:
     work_item: EpisodeWorkItem
     runtime: EpisodeExtractionRuntime
     checkpoint_store: LlmCheckpointStore
+
+
+def extract_companies_from_transcript(  # noqa
+    *,
+    work_item: EpisodeWorkItem,
+    title: str,
+    segments: Sequence[TranscribedSpeechSegment],
+    runtime: EpisodeExtractionRuntime,
+    checkpoint_store: LlmCheckpointStore,
+) -> TranscriptExtractionOutcome:
+    """提取单个节目的公司，同时保留原有调用接口。"""
+    # 延迟导入可避免调度器反向导入本模块中的文本块处理函数时形成循环导入。
+    # pylint: disable=import-outside-toplevel
+    from concurrent.futures import ThreadPoolExecutor
+
+    from podcast_job_finder.companies._transcript_extraction_scheduler import (
+        TranscriptExtractionRequest,
+        extract_companies_from_transcripts,
+    )
+    # pylint: enable=import-outside-toplevel
+
+    with ThreadPoolExecutor(
+        max_workers=runtime.llm.max_in_flight_requests
+    ) as request_executor:
+        execution_result = extract_companies_from_transcripts(
+            requests=(
+                TranscriptExtractionRequest(
+                    work_item=work_item,
+                    title=title,
+                    segments=tuple(segments),
+                    checkpoint_store=checkpoint_store,
+                ),
+            ),
+            runtime=runtime,
+            request_executor=request_executor,
+        )[0]
+    if isinstance(execution_result, Exception):
+        raise execution_result
+    return execution_result
 
 
 def _extract_transcript_chunk(
