@@ -128,9 +128,23 @@ def _download_episodes(
     *,
     overwrite: bool,
 ) -> None:
-    for entry in entries:
+    total_episodes = len(entries)
+    for episode_number, entry in enumerate(entries, start=1):
         episode = entry.episode
         target_path = entry.local_path
+        logger.info(
+            "开始处理 RSS 节目音频：podcast=%s episode_progress=%d/%d "
+            "episode_id=%s title=%s expected_bytes=%s path=%s",
+            feed.title,
+            episode_number,
+            total_episodes,
+            episode.episode_id,
+            episode.title,
+            episode.audio_length_bytes
+            if episode.audio_length_bytes is not None
+            else "unknown",
+            target_path,
+        )
         try:
             prepare_episode_audio_directory(
                 target_path.parent.parent,
@@ -145,8 +159,11 @@ def _download_episodes(
             entry.status = "failed"
             entry.error = str(error)
             logger.error(
-                "下载 RSS 节目音频失败：podcast=%s episode_id=%s title=%s error=%s",
+                "下载 RSS 节目音频失败：podcast=%s episode_progress=%d/%d "
+                "episode_id=%s title=%s error=%s",
                 feed.title,
+                episode_number,
+                total_episodes,
                 episode.episode_id,
                 episode.title,
                 error,
@@ -154,8 +171,11 @@ def _download_episodes(
         else:
             entry.status = "skipped" if skipped else "downloaded"
             logger.info(
-                "RSS 节目音频处理完成：podcast=%s episode_id=%s status=%s path=%s",
+                "RSS 节目音频处理完成：podcast=%s episode_progress=%d/%d "
+                "episode_id=%s status=%s path=%s",
                 feed.title,
+                episode_number,
+                total_episodes,
                 episode.episode_id,
                 entry.status,
                 target_path,
