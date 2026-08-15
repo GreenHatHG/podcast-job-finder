@@ -189,7 +189,7 @@ def _wait_before_retry(
         config.base_delay_seconds * (2 ** (attempt - 1)),
         config.max_delay_seconds,
     )
-    logger.debug(
+    logger.warning(
         "%s 第 %s 次尝试失败，将在 %.2f 秒后重试。错误：%s",
         operation_name,
         attempt,
