@@ -32,6 +32,7 @@ from podcast_job_finder.companies.transcript_chunks import (
 )
 from podcast_job_finder.episode import EpisodeInfo
 from podcast_job_finder.episode.models import EpisodeWorkItem
+from podcast_job_finder.tracing import trace_id_var
 from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 
 
@@ -195,12 +196,20 @@ def _run_cached_extraction(
         prompt_text=prompt,
     )
     context.checkpoint_store.save_prepared(payload)
-    attempt = run_company_extraction_from_prompt(
-        prompt,
-        runtime.llm,
-        company_blacklist=company_blacklist,
-        result_validator=result_validator,
+    request_trace_id = (
+        f"company-extraction/{episode_id or context.work_item.episode_url}/"
+        f"{checkpoint_key}"
     )
+    trace_id_token = trace_id_var.set(request_trace_id)
+    try:
+        attempt = run_company_extraction_from_prompt(
+            prompt,
+            runtime.llm,
+            company_blacklist=company_blacklist,
+            result_validator=result_validator,
+        )
+    finally:
+        trace_id_var.reset(trace_id_token)
     if attempt.error is not None:
         context.checkpoint_store.save_failed(
             payload,
