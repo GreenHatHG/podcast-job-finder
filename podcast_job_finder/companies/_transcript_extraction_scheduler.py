@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, wait
 from dataclasses import dataclass
 from typing import Final, Sequence
@@ -55,16 +56,18 @@ class _PendingTranscriptExtraction:
     context 保存该节目各次 LLM 请求共用的运行配置和检查点目录；chunks 按转写
     文本中的原始顺序保存所有文本块。每个文本块成功后，结果以 chunk.index 为键
     写入 chunk_outcomes；remaining_chunk_count 则记录还有多少文本块任务尚未由
-    调度器处理，包括已经开始以及仍在线程池中等待的任务。
+    调度器处理，包括尚未提交、已经开始以及仍在线程池中等待的任务。
 
-    first_error 只保存这个节目最先出现的错误。出现错误后，尚未开始的文本块任务
-    会尝试取消，已经开始的任务仍会等待并接收结果；数量归零后直接返回该错误，不会
-    使用部分成功结果进行公司合并。没有错误时，调度器会先检查所有文本块结果是否
-    完整，再按原始顺序合并候选公司。
+    first_error 只保存这个节目最先出现的错误。出现错误后，尚未提交的文本块会丢弃，
+    已经提交但尚未开始的任务会尝试取消，已经开始的任务仍会等待并接收结果；数量
+    归零后直接返回该错误，不会使用部分成功结果进行公司合并。没有错误时，调度器会
+    先检查所有文本块结果是否完整，再按原始顺序合并候选公司。
     """
 
     context: _ExtractionExecutionContext
+    title: str
     chunks: tuple[TranscriptChunk, ...]
+    unscheduled_chunks: deque[TranscriptChunk]
     chunk_outcomes: dict[int, _LlmExtractionOutcome]
     remaining_chunk_count: int
     first_error: Exception | None = None
@@ -126,16 +129,19 @@ class _TranscriptExtractionScheduler:
             Future[_LlmExtractionOutcome], _SubmittedChunkWork
         ] = {}
         self._merge_futures: dict[Future[_LlmExtractionOutcome], int] = {}
+        # 每个有待提交文本块的节目在队列中最多出现一次。每次只取一个文本块，
+        # 仍有剩余时把节目放回队尾，让长节目不会挡住后续节目。
+        self._ready_episode_indexes: deque[int] = deque()
 
     def run(
         self,
         requests: Sequence[TranscriptExtractionRequest],
     ) -> list[TranscriptExtractionExecutionResult]:
-        # 调用方已经保证每个节目使用独立检查点目录，因此可以直接提交所有节目。
+        # 调用方已经保证每个节目使用独立检查点目录，因此可以登记所有节目，
+        # 再由轮转队列按任务上限逐步提交文本块。
         for episode_index, request in enumerate(requests):
             self._submit_request(episode_index, request)
-        self._wait_for_chunk_results()
-        self._collect_merge_results()
+        self._collect_results()
         # 正常情况下，每个请求都会得到成功结果或错误。这里用于发现调度流程
         # 提前结束、导致某个位置没有被写入的程序错误。
         if any(result is None for result in self._results):
@@ -165,32 +171,59 @@ class _TranscriptExtractionScheduler:
                 runtime=self._runtime,
                 checkpoint_store=request.checkpoint_store,
             ),
+            title=request.title,
             chunks=chunks,
+            unscheduled_chunks=deque(chunks),
             chunk_outcomes={},
             remaining_chunk_count=len(chunks),
         )
         self._states[episode_index] = state
-        for chunk in chunks:
+        self._ready_episode_indexes.append(episode_index)
+
+    def _fill_available_slots(self) -> None:
+        while (
+            self._ready_episode_indexes
+            and self._pending_task_count() < self._runtime.llm.max_in_flight_requests
+        ):
+            episode_index = self._ready_episode_indexes.popleft()
+            state = self._states[episode_index]
+            chunk = state.unscheduled_chunks.popleft()
             future = self._request_executor.submit(
                 _extract_transcript_chunk,
                 chunk=chunk,
-                title=request.title,
+                title=state.title,
                 context=state.context,
             )
             self._pending_chunk_work[future] = _SubmittedChunkWork(
                 episode_index=episode_index,
                 chunk_index=chunk.index,
             )
+            if state.unscheduled_chunks:
+                self._ready_episode_indexes.append(episode_index)
 
-    def _wait_for_chunk_results(self) -> None:
-        while self._pending_chunk_work:
-            # 任意文本块任务完成就立即处理，不必等待其他文本块任务全部结束。
+    def _pending_task_count(self) -> int:
+        return len(self._pending_chunk_work) + len(self._merge_futures)
+
+    def _collect_results(self) -> None:
+        while (
+            self._pending_chunk_work
+            or self._merge_futures
+            or self._ready_episode_indexes
+        ):
+            self._fill_available_slots()
+            pending_futures = set(self._pending_chunk_work) | set(self._merge_futures)
+            if not pending_futures:
+                break
+            # 任意文本块或合并任务完成就立即处理，并按空出的名额轮转补充文本块。
             completed_futures, _ = wait(
-                self._pending_chunk_work,
+                pending_futures,
                 return_when=FIRST_COMPLETED,
             )
             for future in completed_futures:
-                self._process_completed_chunk(future)
+                if future in self._pending_chunk_work:
+                    self._process_completed_chunk(future)
+                else:
+                    self._process_completed_merge(future)
 
     def _process_completed_chunk(
         self,
@@ -203,7 +236,7 @@ class _TranscriptExtractionScheduler:
         # 只在这个任务首次写入节目错误时取消一次。之后取回已取消的任务时，
         # first_error 已经存在，无需再次遍历尚未完成的任务。
         if not had_error and state.first_error is not None:
-            self._cancel_pending_chunks(work.episode_index)
+            self._cancel_remaining_chunks(work.episode_index, state)
         if state.remaining_chunk_count == 0:
             self._finish_chunk_stage(work.episode_index, state)
 
@@ -227,7 +260,17 @@ class _TranscriptExtractionScheduler:
             if state.first_error is None:
                 state.first_error = error
 
-    def _cancel_pending_chunks(self, episode_index: int) -> None:
+    def _cancel_remaining_chunks(
+        self,
+        episode_index: int,
+        state: _PendingTranscriptExtraction,
+    ) -> None:
+        state.remaining_chunk_count -= len(state.unscheduled_chunks)
+        state.unscheduled_chunks.clear()
+        try:
+            self._ready_episode_indexes.remove(episode_index)
+        except ValueError:
+            pass
         # cancel() 只能取消还没在线程中开始的任务；已经开始的任务仍会执行完，
         # 并由等待循环正常取回，这样线程池里不会留下无人处理的结果。
         for future, work in self._pending_chunk_work.items():
@@ -286,15 +329,16 @@ class _TranscriptExtractionScheduler:
         )
         self._merge_futures[merge_future] = episode_index
 
-    def _collect_merge_results(self) -> None:
-        # 所有合并任务在各自节目的文本块完成时已经提交，并与剩余文本块并发执行。
-        # 这里只依次接收它们的结果，不会延迟合并请求的发送时间。
-        for future, episode_index in self._merge_futures.items():
-            self._record_merge_result(
-                future,
-                episode_index,
-                self._states[episode_index],
-            )
+    def _process_completed_merge(
+        self,
+        future: Future[_LlmExtractionOutcome],
+    ) -> None:
+        episode_index = self._merge_futures.pop(future)
+        self._record_merge_result(
+            future,
+            episode_index,
+            self._states[episode_index],
+        )
 
     def _record_merge_result(
         self,
