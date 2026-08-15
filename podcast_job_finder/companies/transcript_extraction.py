@@ -4,7 +4,6 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Final, Sequence
 
-from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 from podcast_job_finder.companies.checkpoint import (
     STATUS_SUCCESS,
     LlmCheckpointSavePayload,
@@ -17,7 +16,6 @@ from podcast_job_finder.companies.candidate_merge import (
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.companies.extraction import (
     build_company_extraction_prompt,
-    normalize_company_mentions,
     run_company_extraction_from_prompt,
 )
 from podcast_job_finder.companies.models import (
@@ -27,7 +25,6 @@ from podcast_job_finder.companies.models import (
 )
 from podcast_job_finder.companies.transcript_chunks import (
     TranscriptChunk,
-    build_transcript_chunks,
 )
 from podcast_job_finder.runtime_signature import build_runtime_signature_hash
 from podcast_job_finder.episode import EpisodeInfo
@@ -54,62 +51,6 @@ class _ExtractionExecutionContext:
     work_item: EpisodeWorkItem
     runtime: EpisodeExtractionRuntime
     checkpoint_store: LlmCheckpointStore
-
-
-def extract_companies_from_transcript(
-    *,
-    work_item: EpisodeWorkItem,
-    title: str,
-    segments: Sequence[TranscribedSpeechSegment],
-    runtime: EpisodeExtractionRuntime,
-    checkpoint_store: LlmCheckpointStore,
-) -> TranscriptExtractionOutcome:
-    chunks = build_transcript_chunks(segments)
-    if not chunks:
-        return TranscriptExtractionOutcome(
-            extraction_result=CompanyExtractionResult(),
-            chunk_count=0,
-            candidate_count=0,
-            cached=False,
-        )
-
-    context = _ExtractionExecutionContext(
-        work_item=work_item,
-        runtime=runtime,
-        checkpoint_store=checkpoint_store,
-    )
-    chunk_results: list[CompanyExtractionResult] = []
-    all_cached = True
-    for chunk in chunks:
-        result, cached = _extract_transcript_chunk(
-            chunk=chunk,
-            title=title,
-            context=context,
-        )
-        chunk_results.append(result)
-        all_cached = all_cached and cached
-
-    candidates = [
-        company for chunk_result in chunk_results for company in chunk_result.companies
-    ]
-    if len(chunks) == 1 or not candidates:
-        extraction_result = normalize_company_mentions(
-            candidates,
-            company_blacklist=runtime.company_blacklist,
-        )
-    else:
-        extraction_result, merge_cached = _merge_company_candidates(
-            candidates=candidates,
-            context=context,
-        )
-        all_cached = all_cached and merge_cached
-
-    return TranscriptExtractionOutcome(
-        extraction_result=extraction_result,
-        chunk_count=len(chunks),
-        candidate_count=len(candidates),
-        cached=all_cached,
-    )
 
 
 def _extract_transcript_chunk(
