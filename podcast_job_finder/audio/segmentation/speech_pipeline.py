@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
+from statistics import median
 from typing import Final
 
 from podcast_job_finder.audio.segmentation.normalized_audio import normalize_audio_file
@@ -13,13 +15,16 @@ from podcast_job_finder.audio.segmentation.segment_export import (
 )
 from podcast_job_finder.audio.segmentation.vad import (
     VAD_SAMPLE_RATE,
+    SpeechSegment,
     VadConfig,
     _detect_speech_segments,
 )
+from podcast_job_finder.timestamps import format_duration_ms
 
 
 DEFAULT_SILENCE_PADDING_MS: Final = 500
 INVALID_SILENCE_PADDING_ERROR: Final = "silence_padding_ms 必须大于等于 0。"
+DURATION_BUCKET_BOUNDARY_MS: Final = 10_000
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +73,7 @@ def detect_and_export_speech_segments(  # pylint: disable=too-many-arguments
             audio,
             config=config,
         )
-        logger.info("语音片段检测完成：segment_count=%d", len(segments))
+        _log_speech_segment_summary(segments)
         logger.info(
             "开始导出音频片段：segment_count=%d output_dir=%s",
             len(segments),
@@ -88,3 +93,50 @@ def detect_and_export_speech_segments(  # pylint: disable=too-many-arguments
             output_dir,
         )
         return exported_segments
+
+
+def _log_speech_segment_summary(segments: Sequence[SpeechSegment]) -> None:
+    if not segments:
+        logger.info("语音片段检测完成：segment_count=0 duration_distribution=无片段")
+        return
+
+    durations_ms = [segment.duration_ms for segment in segments]
+    logger.info(
+        "语音片段检测完成：segment_count=%d total_duration=%s "
+        "min_duration=%s max_duration=%s average_duration=%s "
+        'median_duration=%s duration_distribution="%s"',
+        len(durations_ms),
+        format_duration_ms(sum(durations_ms)),
+        format_duration_ms(min(durations_ms)),
+        format_duration_ms(max(durations_ms)),
+        format_duration_ms(round(sum(durations_ms) / len(durations_ms))),
+        format_duration_ms(round(median(durations_ms))),
+        _format_duration_distribution(durations_ms),
+    )
+
+
+def _format_duration_distribution(durations_ms: Sequence[int]) -> str:
+    under_10_seconds = 0
+    from_10_to_20_seconds = 0
+    from_20_to_30_seconds = 0
+    at_least_30_seconds = 0
+    for duration_ms in durations_ms:
+        if duration_ms < DURATION_BUCKET_BOUNDARY_MS:
+            under_10_seconds += 1
+        elif duration_ms < DURATION_BUCKET_BOUNDARY_MS * 2:
+            from_10_to_20_seconds += 1
+        elif duration_ms < DURATION_BUCKET_BOUNDARY_MS * 3:
+            from_20_to_30_seconds += 1
+        else:
+            at_least_30_seconds += 1
+
+    total_count = len(durations_ms)
+    buckets = (
+        ("<10s", under_10_seconds),
+        ("10-20s", from_10_to_20_seconds),
+        ("20-30s", from_20_to_30_seconds),
+        (">=30s", at_least_30_seconds),
+    )
+    return ", ".join(
+        f"{label}={count} ({count / total_count:.1%})" for label, count in buckets
+    )

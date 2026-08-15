@@ -254,12 +254,16 @@ class DoubaoAudioTranscriber:
         # 按提交顺序保存正在等待结果的请求。
         pending_requests: deque[_PendingRequest] = deque()
         current_previous = previous_segment
+        total_segment_count = max(segment.index for segment in segments)
 
         # 记住最早发生的错误；已提交的请求处理完后，再把错误交给上层。
         first_error: Exception | None = None
         for segment in segments:
             # 提交请求后立即继续提交下一个片段，让多个请求可以同时进行。
-            future = self._request_client.submit_segment(segment)
+            future = self._request_client.submit_segment(
+                segment,
+                total_segment_count=total_segment_count,
+            )
             pending_requests.append(_PendingRequest(segment, future))
 
             # 队列未达到上限时继续提交，达到上限后才取出最早的请求。

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.timestamps import format_duration_ms
 from podcast_job_finder.transcription.models import AudioTranscriptionError
 
 from .request_scheduler import DoubaoRequestScheduler
@@ -31,6 +32,7 @@ class _DoubaoRequest:
     path: Path
     config: object
     segment: ExportedSpeechSegment | None = None
+    total_segment_count: int | None = None
 
 
 class DoubaoRequestClient:
@@ -61,12 +63,15 @@ class DoubaoRequestClient:
     def submit_segment(
         self,
         segment: ExportedSpeechSegment,
+        *,
+        total_segment_count: int,
     ) -> Future[SessionResponses]:
         return self._request_scheduler.submit(
             _DoubaoRequest(
                 path=segment.file_path,
                 config=self._asr_config,
                 segment=segment,
+                total_segment_count=total_segment_count,
             )
         )
 
@@ -91,12 +96,18 @@ class DoubaoRequestClient:
         self,
         request: _DoubaoRequest,
     ) -> SessionResponses:
-        if request.segment is not None:
+        if request.segment is not None and request.total_segment_count is not None:
+            segment = request.segment.segment
             logger.info(
-                "识别音频片段：index=%d start_ms=%d end_ms=%d",
+                "识别音频片段：progress=%d/%d start_ms=%d end_ms=%d "
+                "start=%s end=%s duration=%s",
                 request.segment.index,
-                request.segment.segment.start_ms,
-                request.segment.segment.end_ms,
+                request.total_segment_count,
+                segment.start_ms,
+                segment.end_ms,
+                format_duration_ms(segment.start_ms),
+                format_duration_ms(segment.end_ms),
+                format_duration_ms(segment.duration_ms),
             )
         return asyncio.run(
             self._collect_stream_responses(
