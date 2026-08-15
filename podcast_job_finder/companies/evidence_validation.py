@@ -9,7 +9,8 @@ from podcast_job_finder.companies.models import (
 
 
 INVALID_EVIDENCE_SOURCE_ERROR: Final = (
-    "公司提取结果的证据不属于允许的原文：name={name} evidence={evidence}"
+    "公司提取结果的证据不是任一允许原文中的连续逐字片段"
+    "（比较时仅忽略空白字符）：name={name} evidence={evidence}"
 )
 EVIDENCE_MISSING_NAME_ERROR: Final = "公司提取结果的证据未直接包含公司名称：{name}"
 
