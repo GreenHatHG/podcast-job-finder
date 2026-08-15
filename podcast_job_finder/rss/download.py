@@ -20,6 +20,7 @@ from podcast_job_finder.rss.feed import (
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.audio.episode_audio.files import (
     SOURCE_FILE_STEM,
+    prepare_episode_audio_directory,
     store_episode_audio,
 )
 from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
@@ -131,6 +132,10 @@ def _download_episodes(
         episode = entry.episode
         target_path = entry.local_path
         try:
+            prepare_episode_audio_directory(
+                target_path.parent.parent,
+                episode.episode_id,
+            )
             skipped = store_episode_audio(
                 episode.audio_url,
                 target_path,
