@@ -20,6 +20,7 @@ from podcast_job_finder.filesystem import (
     OWNER_READ_WRITE_MODE,
     temporary_sibling_path,
 )
+from podcast_job_finder.errors import EpisodeProcessingError
 
 
 NORMALIZED_AUDIO_FILE_NAME: Final = "normalized.wav"
@@ -40,7 +41,7 @@ NORMALIZED_TEMPORARY_FILE_ERROR: Final = (
 )
 
 
-class AudioFileDecodeError(RuntimeError):
+class AudioFileDecodeError(EpisodeProcessingError, RuntimeError):
     """音频文件无法转换成规范化 WAV 时抛出的错误。"""
 
 

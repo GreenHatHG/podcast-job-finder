@@ -13,6 +13,7 @@ from podcast_job_finder.transcription.manifest import (
     parse_transcribed_segment,
 )
 from podcast_job_finder.audio.segmentation.vad import MAX_FORCED_SPLIT_OVERLAP_MS
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 JSON_FILE_PATTERN: Final = "*.json"
@@ -37,7 +38,7 @@ SOURCE_IDENTITY_FIELDS: Final = (
 )
 
 
-class TranscriptionInputError(ValueError):
+class TranscriptionInputError(PodcastJobFinderError, ValueError):
     """已有音频转写 JSON 无法用于生成文章。"""
 
 

@@ -21,20 +21,14 @@ from podcast_job_finder.companies.pipeline_results import (
     SuccessfulCompanyEpisodeResult,
 )
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
-from podcast_job_finder.companies.models import CompanyExtractionError
 from podcast_job_finder.companies.page_loader import (
     DEFAULT_EPISODE_PAGE_LOADER,
     EpisodePageLoaderProtocol,
     RateLimitedEpisodePageLoader,
 )
-from podcast_job_finder.llm import (
-    EmptyLlmResponseError,
-    OpenAiCompatibleConfigError,
-    OpenAiCompatibleLlmError,
-)
 from podcast_job_finder.llm.rate_limit import format_rate
-from podcast_job_finder.episode import EpisodeParseError
 from podcast_job_finder.tracing import trace_id_var
 
 
@@ -44,15 +38,6 @@ PRODUCER_THREAD_NAME: Final = "episode-prompt-producer"
 CONSUMER_THREAD_NAME: Final = "episode-llm-consumer"
 QUEUE_SENTINEL: Final = object()
 logger = logging.getLogger(__name__)
-
-EXPECTED_EPISODE_ERRORS: Final = (
-    CompanyExtractionError,
-    EmptyLlmResponseError,
-    EpisodeParseError,
-    OpenAiCompatibleConfigError,
-    OpenAiCompatibleLlmError,
-    ValueError,
-)
 
 
 @dataclass(slots=True, frozen=True)
@@ -217,7 +202,7 @@ def _produce_episode_tasks(
                     ),
                     fatal_error_state=shared_state.fatal_error_state,
                 )
-            except EXPECTED_EPISODE_ERRORS as error:
+            except EpisodeProcessingError as error:
                 logger.info("节目生产失败：%s", error)
                 shared_state.episode_results[episode_index] = (
                     FailedCompanyEpisodeResult(
@@ -275,7 +260,7 @@ def _consume_episode_tasks(
                         extraction_result=completed_extraction.extraction_result,
                     )
                 )
-            except EXPECTED_EPISODE_ERRORS as error:
+            except EpisodeProcessingError as error:
                 logger.info("节目消费失败：%s", error)
                 shared_state.episode_results[queued_work.episode_index] = (
                     FailedCompanyEpisodeResult(

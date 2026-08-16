@@ -33,6 +33,7 @@ from podcast_job_finder.transcription.pipeline_results import (
 )
 from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
 from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 TRANSCRIPTION_REPORT_TEMPLATE: Final = "transcription_result_{feed_id}_{timestamp}.json"
@@ -40,13 +41,12 @@ SAVE_REPORT_ERROR_TEMPLATE: Final = "保存音频转写批次报告失败：{pat
 SEGMENT_DIR_NAME = episode_transcription.SEGMENT_DIR_NAME
 MISSING_EPISODE_ID_ERROR = episode_transcription.MISSING_EPISODE_ID_ERROR
 MISSING_AUDIO_URL_ERROR = episode_transcription.MISSING_AUDIO_URL_ERROR
-EXPECTED_EPISODE_ERRORS = episode_transcription.EXPECTED_EPISODE_ERRORS
 RESULT_STATUS_ERROR = pipeline_results.RESULT_STATUS_ERROR
 
 logger = logging.getLogger(__name__)
 
 
-class BatchAudioTranscriptionError(RuntimeError):
+class BatchAudioTranscriptionError(PodcastJobFinderError, RuntimeError):
     """批量音频转写流程无法启动或保存批次结果。"""
 
 

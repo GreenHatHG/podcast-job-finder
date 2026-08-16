@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Final
 
 from podcast_job_finder.environment import get_optional_env
+from podcast_job_finder.errors import ConfigurationError
 
 
 FIRERED_PYTHON_ENV: Final = "FIRERED_PYTHON"
@@ -27,7 +28,7 @@ FIRERED_ASR_MODEL_RELATIVE_PATH: Final = Path(
 FIRERED_PUNC_MODEL_RELATIVE_PATH: Final = Path("models/firered/FireRedPunc")
 
 
-class AudioTranscriptionConfigError(ValueError):
+class AudioTranscriptionConfigError(ConfigurationError, ValueError):
     """音频转写后端配置无效。"""
 
 

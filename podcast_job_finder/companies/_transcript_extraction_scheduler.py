@@ -7,10 +7,7 @@ from typing import Final, Sequence
 
 from podcast_job_finder.companies.checkpoint import LlmCheckpointStore
 from podcast_job_finder.companies.extraction import normalize_company_mentions
-from podcast_job_finder.companies.models import (
-    CompanyExtractionError,
-    CompanyExtractionResult,
-)
+from podcast_job_finder.companies.models import CompanyExtractionResult
 from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.companies.transcript_chunks import (
     TranscriptChunk,
@@ -24,22 +21,30 @@ from podcast_job_finder.companies.transcript_extraction import (
     _merge_company_candidates,
 )
 from podcast_job_finder.episode.models import EpisodeWorkItem
-from podcast_job_finder.llm import OpenAiCompatibleLlmError
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.progress import PercentageProgressLogger
 from podcast_job_finder.transcription.models import TranscribedSpeechSegment
 
 
 INCOMPLETE_CHUNK_RESULTS_ERROR: Final = "音频公司提取未生成完整的文本块结果。"
 CANCELLED_CHUNK_ERROR: Final = "音频公司提取文本块任务被取消。"
-EXPECTED_EXTRACTION_TASK_ERRORS: Final = (
-    CompanyExtractionError,
-    OpenAiCompatibleLlmError,
-    OSError,
-    ValueError,
-)
-
 type _LlmExtractionOutcome = tuple[CompanyExtractionResult, bool]
-type TranscriptExtractionExecutionResult = TranscriptExtractionOutcome | Exception
+
+
+@dataclass(slots=True, frozen=True)
+class TranscriptExtractionFailure:
+    """保存单个节目文本提取失败信息，不把异常直接作为结果返回。"""
+
+    error: EpisodeProcessingError
+
+    @property
+    def message(self) -> str:
+        return str(self.error)
+
+
+type TranscriptExtractionExecutionResult = (
+    TranscriptExtractionOutcome | TranscriptExtractionFailure
+)
 
 
 logger = logging.getLogger(__name__)
@@ -73,7 +78,7 @@ class _PendingTranscriptExtraction:
     chunks: tuple[TranscriptChunk, ...]
     chunk_outcomes: dict[int, _LlmExtractionOutcome]
     remaining_chunk_count: int
-    first_error: Exception | None = None
+    first_error: EpisodeProcessingError | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -248,13 +253,13 @@ class _TranscriptExtractionScheduler:
         state.remaining_chunk_count -= 1
         if future.cancelled():
             if state.first_error is None:
-                state.first_error = RuntimeError(CANCELLED_CHUNK_ERROR)
+                raise RuntimeError(CANCELLED_CHUNK_ERROR)
             return
         # future.result() 会在后台任务失败时重新抛出异常。这里只保存当前节目的
         # 第一个错误，稍后写入这个节目的结果，其他节目仍然可以继续处理。
         try:
             state.chunk_outcomes[chunk_index] = future.result()
-        except EXPECTED_EXTRACTION_TASK_ERRORS as error:
+        except EpisodeProcessingError as error:
             if state.first_error is None:
                 state.first_error = error
 
@@ -273,7 +278,10 @@ class _TranscriptExtractionScheduler:
         # 只有当前节目的全部文本块都已结束，才会进入这里。失败时直接记录错误，
         # 不再使用可能已经成功返回的部分结果。
         if state.first_error is not None:
-            self._record_episode_result(episode_index, state.first_error)
+            self._record_episode_result(
+                episode_index,
+                TranscriptExtractionFailure(error=state.first_error),
+            )
             return
 
         expected_chunk_indexes = {chunk.index for chunk in state.chunks}
@@ -282,11 +290,7 @@ class _TranscriptExtractionScheduler:
         # {1, 2, 3} 的三个文本块时，chunk_outcomes 也必须正好包含这三个下标；缺少
         # 某个下标或出现其他下标都表示内部记录不完整，不能继续合并候选公司。
         if set(state.chunk_outcomes) != expected_chunk_indexes:
-            self._record_episode_result(
-                episode_index,
-                RuntimeError(INCOMPLETE_CHUNK_RESULTS_ERROR),
-            )
-            return
+            raise RuntimeError(INCOMPLETE_CHUNK_RESULTS_ERROR)
 
         # 后台任务可能乱序完成，这里按原文本块顺序收集候选公司，保证后续合并
         # 接收到稳定的输入顺序。
@@ -343,8 +347,11 @@ class _TranscriptExtractionScheduler:
         # 结果，其他节目仍会继续处理。
         try:
             extraction_result, merge_cached = future.result()
-        except EXPECTED_EXTRACTION_TASK_ERRORS as error:
-            self._record_episode_result(episode_index, error)
+        except EpisodeProcessingError as error:
+            self._record_episode_result(
+                episode_index,
+                TranscriptExtractionFailure(error=error),
+            )
             return
 
         ordered_outcomes = self._ordered_chunk_outcomes(state)

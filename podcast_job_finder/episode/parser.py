@@ -6,6 +6,7 @@ from html import unescape
 from html.parser import HTMLParser
 from typing import Final
 
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.episode.models import CommentInfo, EpisodeInfo
 
 
@@ -38,7 +39,7 @@ JSON_TYPE_DESCRIPTIONS: Final[dict[type[object], str]] = {
 }
 
 
-class EpisodeParseError(ValueError):
+class EpisodeParseError(EpisodeProcessingError, ValueError):
     """Raised when an episode page cannot be parsed."""
 
 

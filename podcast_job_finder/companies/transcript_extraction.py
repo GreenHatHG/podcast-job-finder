@@ -79,6 +79,7 @@ def extract_companies_from_transcript(  # noqa
     from concurrent.futures import ThreadPoolExecutor
 
     from podcast_job_finder.companies._transcript_extraction_scheduler import (
+        TranscriptExtractionFailure,
         TranscriptExtractionRequest,
         extract_companies_from_transcripts,
     )
@@ -100,8 +101,8 @@ def extract_companies_from_transcript(  # noqa
             runtime=runtime,
             request_executor=request_executor,
         )[0]
-    if isinstance(execution_result, Exception):
-        raise execution_result
+    if isinstance(execution_result, TranscriptExtractionFailure):
+        raise execution_result.error
     return execution_result
 
 

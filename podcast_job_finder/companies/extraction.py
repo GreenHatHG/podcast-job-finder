@@ -22,6 +22,7 @@ from podcast_job_finder.llm import (
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.episode import CommentInfo, EpisodeInfo
 
 
@@ -313,7 +314,7 @@ def _build_retry_exhausted_error(
     max_attempts: int,
     failure_category: str,
     last_error: Exception,
-) -> Exception:
+) -> EpisodeProcessingError:
     if failure_category == REQUEST_FAILURE_CATEGORY:
         return OpenAiCompatibleLlmError(
             LLM_REQUEST_RETRY_EXHAUSTED_TEMPLATE.format(

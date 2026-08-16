@@ -14,9 +14,10 @@ from podcast_job_finder.audio.segmentation.vad import VadConfig
 from podcast_job_finder.transcription.diagnostics import (
     TranscriptionDiagnostics,
 )
+from podcast_job_finder.errors import EpisodeProcessingError
 
 
-class AudioTranscriptionError(RuntimeError):
+class AudioTranscriptionError(EpisodeProcessingError, RuntimeError):
     """音频片段无法完成转写时抛出的错误。"""
 
 

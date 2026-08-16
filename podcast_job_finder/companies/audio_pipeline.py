@@ -7,6 +7,7 @@ from typing import Final
 
 from podcast_job_finder.companies._transcript_extraction_scheduler import (
     TranscriptExtractionExecutionResult,
+    TranscriptExtractionFailure,
     TranscriptExtractionRequest,
     extract_companies_from_transcripts,
 )
@@ -21,11 +22,9 @@ from podcast_job_finder.companies.runtime import EpisodeExtractionRuntime
 from podcast_job_finder.companies.transcript_extraction import (
     TranscriptExtractionOutcome,
 )
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.episode.models import EpisodeResult, EpisodeWorkItem
-from podcast_job_finder.transcription.manifest import (
-    TranscriptionManifestError,
-    load_episode_transcript,
-)
+from podcast_job_finder.transcription.manifest import load_episode_transcript
 from podcast_job_finder.transcription.pipeline_results import (
     BatchAudioTranscriptionResult,
     EpisodeTranscriptionResult,
@@ -36,12 +35,6 @@ from podcast_job_finder.transcription.pipeline_results import (
 COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME: Final = "company_extraction"
 INVALID_TRANSCRIPTION_PATH_ERROR: Final = "节目结果缺少有效的 transcription_path。"
 INVALID_EPISODE_URL_ERROR: Final = "节目结果缺少有效的 episode_url。"
-
-EXPECTED_PREPARATION_ERRORS: Final = (
-    TranscriptionManifestError,
-    OSError,
-    ValueError,
-)
 
 type _PreparedExtraction = tuple[
     int,
@@ -130,10 +123,10 @@ def _prepare_extraction_batch(
                 episode_transcription,
                 resume=resume,
             )
-        except EXPECTED_PREPARATION_ERRORS as error:
+        except EpisodeProcessingError as error:
             episode_results[record_index] = _build_error_result(
                 episode_transcription,
-                error,
+                str(error),
             )
             continue
         prepared_extractions.append((record_index, episode_transcription, request))
@@ -172,8 +165,8 @@ def _build_execution_result(
     work_item: EpisodeWorkItem,
     execution_result: TranscriptExtractionExecutionResult,
 ) -> EpisodeResult:
-    if isinstance(execution_result, Exception):
-        return _build_error_result(episode_transcription, execution_result)
+    if isinstance(execution_result, TranscriptExtractionFailure):
+        return _build_error_result(episode_transcription, execution_result.message)
     return _build_success_result(
         episode_transcription,
         work_item=work_item,
@@ -205,29 +198,29 @@ def _build_success_result(
 
 def _build_error_result(
     episode_transcription: SuccessfulEpisodeTranscriptionResult,
-    error: Exception,
+    error_message: str,
 ) -> FailedCompanyEpisodeResult:
     logger.info(
         "音频公司提取失败：eid=%s error=%s",
         episode_transcription.episode.eid,
-        error,
+        error_message,
     )
     return FailedCompanyEpisodeResult(
         episode=episode_transcription.episode,
-        error=str(error),
+        error=error_message,
         transcription_result=episode_transcription,
     )
 
 
 def _require_path(value: str) -> Path:
     if not value.strip():
-        raise ValueError(INVALID_TRANSCRIPTION_PATH_ERROR)
+        raise EpisodeProcessingError(INVALID_TRANSCRIPTION_PATH_ERROR)
     return Path(value)
 
 
 def _build_work_item(episode: EpisodeWorkItem) -> EpisodeWorkItem:
     if not episode.episode_url.strip():
-        raise ValueError(INVALID_EPISODE_URL_ERROR)
+        raise EpisodeProcessingError(INVALID_EPISODE_URL_ERROR)
     return EpisodeWorkItem(
         episode_url=episode.episode_url,
         eid=_optional_text(episode.eid),

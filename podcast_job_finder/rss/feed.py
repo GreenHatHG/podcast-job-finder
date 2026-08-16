@@ -12,6 +12,7 @@ import requests
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.audio.episode_audio.service import extract_audio_extension
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ DUPLICATE_EPISODE_ID_ERROR: Final = (
 )
 
 
-class RssFeedError(RuntimeError):
+class RssFeedError(PodcastJobFinderError, RuntimeError):
     """读取或解析播客 RSS 时发生错误。"""
 
 

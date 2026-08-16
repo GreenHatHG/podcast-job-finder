@@ -25,6 +25,7 @@ from podcast_job_finder.llm import (
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 FORMATTING_CHUNK_MAX_CHARS: Final = 4_000
@@ -62,7 +63,7 @@ class TextGenerationClientProtocol(Protocol):
     def generate(self, prompt: str) -> str: ...
 
 
-class TranscriptionFormattingError(RuntimeError):
+class TranscriptionFormattingError(PodcastJobFinderError, RuntimeError):
     """音频转写文本无法在受限修改规则内完成整理。"""
 
 

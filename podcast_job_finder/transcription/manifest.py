@@ -15,6 +15,7 @@ from podcast_job_finder.transcription.diagnostics import (
     parse_transcription_diagnostics,
 )
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.timestamps import build_utc_timestamp
 
 
@@ -29,7 +30,7 @@ MISSING_EXPORTED_SEGMENT_ERROR: Final = (
 )
 
 
-class TranscriptionManifestError(ValueError):
+class TranscriptionManifestError(EpisodeProcessingError, ValueError):
     """保存的音频转写清单无法用于后续处理。"""
 
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.transcription.batch import (
-    BatchAudioTranscriptionError,
     load_existing_batch_transcription_result,
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
@@ -22,7 +21,6 @@ from podcast_job_finder.transcription.schedule import (
     AudioProcessingMode,
 )
 from podcast_job_finder.transcription.runtime import (
-    AudioTranscriptionConfigError,
     load_audio_transcription_runtime_from_env,
 )
 from podcast_job_finder.companies.audio_pipeline import (
@@ -34,7 +32,6 @@ from podcast_job_finder.companies.episode_runner import (
 )
 from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.pipeline import (
-    EXPECTED_EPISODE_ERRORS,
     run_batch_episode_pipeline,
 )
 from podcast_job_finder.companies.rate_limit import (
@@ -46,8 +43,9 @@ from podcast_job_finder.companies.runtime import (
     load_page_extraction_runtime_from_env,
 )
 from podcast_job_finder.logging import configure_logging
-from podcast_job_finder.rss.feed import RssFeed, RssFeedError, fetch_rss_feed
+from podcast_job_finder.rss.feed import RssFeed, fetch_rss_feed
 from podcast_job_finder.episode import build_episode_url
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 PROGRAM_NAME: Final = "podcast-find-jobs"
@@ -81,11 +79,8 @@ class CliUsageError(ValueError):
 
 
 EXPECTED_CLI_ERRORS: Final = (
-    CliUsageError,
-    RssFeedError,
-    AudioTranscriptionConfigError,
-    BatchAudioTranscriptionError,
-    *EXPECTED_EPISODE_ERRORS,
+    PodcastJobFinderError,
+    ValueError,
 )
 
 

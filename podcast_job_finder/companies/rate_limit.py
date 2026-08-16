@@ -4,13 +4,14 @@ import math
 from typing import Final
 
 from podcast_job_finder.environment import get_optional_env_value
+from podcast_job_finder.errors import ConfigurationError
 
 
 EPISODE_PAGE_FETCH_RATE_PER_MINUTE_ENV: Final = "EPISODE_PAGE_FETCH_RATE_PER_MINUTE"
 INVALID_RATE_ENV_TEMPLATE: Final = "环境变量 {env_name} 必须是大于 0 的数字。"
 
 
-class EpisodePageFetchRateConfigError(ValueError):
+class EpisodePageFetchRateConfigError(ConfigurationError, ValueError):
     """单集页面请求速率配置无效。"""
 
 

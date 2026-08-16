@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Final
 
+from podcast_job_finder.errors import EpisodeProcessingError
+
 
 COMPANIES_FIELD: Final = "companies"
 NAME_FIELD: Final = "name"
@@ -14,7 +16,7 @@ MISSING_COMPANY_FIELD_ERROR: Final = "LLM 返回结果中的公司项缺少必�
 EMPTY_COMPANY_FIELD_ERROR: Final = "LLM 返回结果中的公司项字段不能为空。"
 
 
-class CompanyExtractionError(ValueError):
+class CompanyExtractionError(EpisodeProcessingError, ValueError):
     """Raised when the company extraction result is invalid."""
 
 
@@ -73,4 +75,4 @@ class CompanyExtractionResult:
 class CompanyExtractionAttempt:
     response_text: str | None = None
     extraction_result: CompanyExtractionResult | None = None
-    error: Exception | None = None
+    error: EpisodeProcessingError | None = None

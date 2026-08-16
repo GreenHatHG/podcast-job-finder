@@ -7,11 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Sequence
 
-from podcast_job_finder.audio import (
-    AudioFileDecodeError,
-    AudioSegmentExportError,
-    ExportedSpeechSegment,
-)
+from podcast_job_finder.audio import ExportedSpeechSegment
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.audio.episode_audio.files import (
     build_audio_target_path,
@@ -42,10 +38,7 @@ from podcast_job_finder.transcription.manifest import (
     TRANSCRIPTION_FILE_NAME,
     save_audio_transcription_manifest,
 )
-from podcast_job_finder.transcription.models import (
-    AudioTranscriptionError,
-    AudioTranscriptionResult,
-)
+from podcast_job_finder.transcription.models import AudioTranscriptionResult
 from podcast_job_finder.transcription.pipeline_results import (
     EpisodeTranscriptionResult,
     FailedEpisodeTranscriptionResult,
@@ -56,6 +49,7 @@ from podcast_job_finder.transcription.quality_report import (
     save_transcription_quality_report,
 )
 from podcast_job_finder.transcription.runtime import AudioTranscriptionRuntime
+from podcast_job_finder.errors import EpisodeProcessingError
 
 
 SEGMENT_DIR_NAME: Final = "segments"
@@ -63,15 +57,6 @@ MISSING_EPISODE_ID_ERROR: Final = "音频转写任务缺少有效的节目 ID：
 MISSING_AUDIO_URL_ERROR: Final = "RSS 节目缺少音频地址：eid={eid}"
 
 logger = logging.getLogger(__name__)
-
-EXPECTED_EPISODE_ERRORS = (
-    AudioFileDecodeError,
-    AudioSegmentExportError,
-    AudioTranscriptionError,
-    EpisodeAudioDownloadError,
-    OSError,
-    ValueError,
-)
 
 
 @dataclass(slots=True, frozen=True)
@@ -152,7 +137,7 @@ def prepare_episode_audio(
             local_path=local_path,
             source_url=source_url,
         )
-    except EXPECTED_EPISODE_ERRORS as error:
+    except EpisodeProcessingError as error:
         logger.info("节目音频准备失败：%s", error)
         return FailedEpisodeTranscriptionResult(
             episode=work_item,
@@ -209,7 +194,7 @@ def transcribe_prepared_episode(
             transcription_quality_report_path=str(context.quality_report_path),
             segment_directory=str(context.segment_dir),
         )
-    except EXPECTED_EPISODE_ERRORS as error:
+    except EpisodeProcessingError as error:
         logger.info("节目音频转写失败：%s", error)
         return FailedEpisodeTranscriptionResult(
             episode=context.work_item,
@@ -242,7 +227,9 @@ def _build_episode_context(
 ) -> _EpisodeTranscriptionContext:
     eid = work_item.resolve_episode_id()
     if eid is None:
-        raise ValueError(MISSING_EPISODE_ID_ERROR.format(url=work_item.episode_url))
+        raise EpisodeProcessingError(
+            MISSING_EPISODE_ID_ERROR.format(url=work_item.episode_url)
+        )
     episode_output_dir = prepare_episode_audio_directory(audio_output_dir, eid)
     return _EpisodeTranscriptionContext(
         work_item=work_item,

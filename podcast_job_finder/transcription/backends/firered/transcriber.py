@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Final
 
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.errors import ConfigurationError
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     DEFAULT_SILENCE_PADDING_MS,
 )
@@ -44,7 +45,7 @@ WORKER_EXIT_ERROR: Final = "FireRed 工作进程意外退出：returncode={retur
 WORKER_RESPONSE_ERROR: Final = "FireRed 工作进程返回无效结果：{message}"
 
 
-class FireRedConfigError(ValueError):
+class FireRedConfigError(ConfigurationError, ValueError):
     """FireRed 本地转写配置无效。"""
 
 

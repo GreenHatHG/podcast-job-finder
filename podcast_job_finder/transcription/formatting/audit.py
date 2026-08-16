@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Final, Sequence, TypeAlias
 
+from podcast_job_finder.errors import PodcastJobFinderError
 
 MAX_DELETED_CONTENT_RATIO: Final = 0.05
 DELETION_CONTEXT_CHARS: Final = 20
@@ -20,7 +21,7 @@ MARKDOWN_HEADING_PATTERN: Final = re.compile(r"^[ \t]*#+[ \t]*")
 DiffOpcode: TypeAlias = tuple[str, int, int, int, int]
 
 
-class TranscriptionFormattingValidationError(ValueError):
+class TranscriptionFormattingValidationError(PodcastJobFinderError, ValueError):
     """模型返回内容超出了允许的修改范围。"""
 
 

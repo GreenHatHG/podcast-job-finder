@@ -20,6 +20,7 @@ from podcast_job_finder.audio.segmentation.normalized_audio import (
     NormalizedAudio,
 )
 from podcast_job_finder.audio.segmentation.vad import VAD_SAMPLE_RATE, SpeechSegment
+from podcast_job_finder.errors import EpisodeProcessingError
 from podcast_job_finder.filesystem import (
     AtomicWriteConflictError,
     DEFAULT_FILE_CREATION_MODE,
@@ -56,7 +57,7 @@ INVALID_SEGMENT_AUDIO_FORMAT_ERROR: Final = "不支持的音频片段格式：{a
 logger = logging.getLogger(__name__)
 
 
-class AudioSegmentExportError(RuntimeError):
+class AudioSegmentExportError(EpisodeProcessingError, RuntimeError):
     """音频片段无法导出时抛出的错误。"""
 
 
