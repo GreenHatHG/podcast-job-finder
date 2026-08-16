@@ -74,14 +74,8 @@ RESUME_SOURCE_ERROR: Final = "--resume 只能与 --source audio 一起使用。"
 logger = logging.getLogger(__name__)
 
 
-class CliUsageError(ValueError):
-    """命令行参数无效。"""
-
-
-EXPECTED_CLI_ERRORS: Final = (
-    PodcastJobFinderError,
-    ValueError,
-)
+class CliUsageError(PodcastJobFinderError, ValueError):
+    """命令行参数无效；命令入口打印用法后停止。"""
 
 
 class _CliArgumentParser(argparse.ArgumentParser):
@@ -106,7 +100,7 @@ def main() -> int:
         if len(raw_args) != 1:
             raise CliUsageError(COMMAND_USAGE_TEXT)
         return _run_single_episode_mode(raw_args[0])
-    except EXPECTED_CLI_ERRORS as error:
+    except PodcastJobFinderError as error:
         print(str(error), file=sys.stderr)
         return 1
 

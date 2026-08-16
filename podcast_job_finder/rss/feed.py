@@ -38,7 +38,7 @@ DUPLICATE_EPISODE_ID_ERROR: Final = (
 
 
 class RssFeedError(PodcastJobFinderError, RuntimeError):
-    """读取或解析播客 RSS 时发生错误。"""
+    """当前 RSS 任务失败，可由 RSS 批量边界记录后继续其他 RSS。"""
 
 
 # RSS 单集需要同时保留节目标识和音频资源的原始字段。

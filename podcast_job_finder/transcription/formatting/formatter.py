@@ -21,7 +21,6 @@ from podcast_job_finder.llm import (
     EmptyLlmResponseError,
     LlmRetryConfig,
     LlmRetryExhaustedError,
-    OpenAiCompatibleLlmError,
     RetryableOpenAiCompatibleLlmError,
     execute_llm_with_retry,
 )
@@ -65,12 +64,6 @@ class TextGenerationClientProtocol(Protocol):
 
 class TranscriptionFormattingError(PodcastJobFinderError, RuntimeError):
     """音频转写文本无法在受限修改规则内完成整理。"""
-
-
-EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS: Final = (
-    OpenAiCompatibleLlmError,
-    TranscriptionFormattingError,
-)
 
 
 @dataclass(slots=True, frozen=True)

@@ -6,29 +6,18 @@ import sys
 from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
-from podcast_job_finder.llm import (
-    OpenAiCompatibleConfigError,
-    load_transcription_formatting_llm_runtime_from_env,
-)
+from podcast_job_finder.llm import load_transcription_formatting_llm_runtime_from_env
+from podcast_job_finder.errors import PodcastJobFinderError
 from podcast_job_finder.logging import configure_logging
-from podcast_job_finder.audio import (
-    AudioFileDecodeError,
-    AudioSegmentExportError,
-)
 from podcast_job_finder.audio.segmentation.segment_export import (
     MP3_SEGMENT_AUDIO_FORMAT,
     WAV_SEGMENT_AUDIO_FORMAT,
     SegmentAudioFormat,
     parse_segment_audio_format,
 )
-from podcast_job_finder.transcription.models import AudioTranscriptionError
 from podcast_job_finder.transcription.runtime import (
-    AudioTranscriptionConfigError,
     AudioTranscriptionRuntime,
     load_audio_transcription_runtime_from_env,
-)
-from podcast_job_finder.transcription.formatting.formatter import (
-    EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
 )
 from podcast_job_finder.transcription import local_audio
 from podcast_job_finder.transcription.local_audio import transcribe_local_audio
@@ -44,10 +33,6 @@ SEGMENT_AUDIO_FORMAT_CHOICES: Final = (
     WAV_SEGMENT_AUDIO_FORMAT,
     MP3_SEGMENT_AUDIO_FORMAT,
 )
-
-
-class CliUsageError(ValueError):
-    """命令行参数无效时抛出的错误。"""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -69,16 +54,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             transcription_runtime=transcription_runtime,
             formatting_runtime=formatting_runtime,
         )
-    except (
-        AudioFileDecodeError,
-        AudioSegmentExportError,
-        AudioTranscriptionConfigError,
-        AudioTranscriptionError,
-        OpenAiCompatibleConfigError,
-        OSError,
-        ValueError,
-        *EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
-    ) as error:
+    except PodcastJobFinderError as error:
         print(str(error), file=sys.stderr)
         return 1
     finally:

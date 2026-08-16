@@ -1,15 +1,15 @@
-"""项目级异常类型，用于标识异常的处理边界。"""
+"""项目预期异常的公共分类；具体捕获边界决定停止还是继续。"""
 
 from __future__ import annotations
 
 
 class PodcastJobFinderError(Exception):
-    """程序能够向调用方说明和处理的预期错误。"""
+    """可以直接向用户展示的预期错误；本类型不表示任务能否继续。"""
 
 
 class ConfigurationError(PodcastJobFinderError):
-    """运行配置无效，通常会阻止整个命令启动。"""
+    """运行配置无效；命令入口捕获后打印错误并停止。"""
 
 
 class EpisodeProcessingError(PodcastJobFinderError):
-    """单个节目处理失败，但批量任务可以继续处理其他节目。"""
+    """当前节目处理失败；节目批量边界记录失败后继续其他节目。"""

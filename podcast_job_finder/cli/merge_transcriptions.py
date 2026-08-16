@@ -11,17 +11,13 @@ from podcast_job_finder.transcription.formatting.article import (
     save_transcription_article,
 )
 from podcast_job_finder.transcription.formatting.formatter import (
-    EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
     format_transcription_segments,
 )
 from podcast_job_finder.transcription.formatting.input import (
-    TranscriptionInputError,
     load_transcription_inputs,
 )
-from podcast_job_finder.llm import (
-    OpenAiCompatibleConfigError,
-    load_transcription_formatting_llm_runtime_from_env,
-)
+from podcast_job_finder.errors import PodcastJobFinderError
+from podcast_job_finder.llm import load_transcription_formatting_llm_runtime_from_env
 from podcast_job_finder.logging import configure_logging
 
 
@@ -47,12 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             title=title,
             body=formatted_article.text,
         )
-    except (
-        OpenAiCompatibleConfigError,
-        OSError,
-        TranscriptionInputError,
-        *EXPECTED_TRANSCRIPTION_FORMATTING_ERRORS,
-    ) as error:
+    except PodcastJobFinderError as error:
         print(str(error), file=sys.stderr)
         return 1
 

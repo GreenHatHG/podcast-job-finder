@@ -21,7 +21,7 @@ DEBUG_HTTP_STATUS_TEMPLATE: Final = "[debug] http_status={status_code}"
 
 
 class EpisodePageFetchError(EpisodeProcessingError, ValueError):
-    """节目页面无法获取。"""
+    """当前节目页面无法获取，可记录为单集失败并继续批量任务。"""
 
 
 def parse_episode_url(episode_url: str) -> EpisodeInfo:

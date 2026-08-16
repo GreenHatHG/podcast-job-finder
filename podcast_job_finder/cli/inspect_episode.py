@@ -3,7 +3,8 @@ from __future__ import annotations
 import sys
 from typing import Final
 
-from podcast_job_finder.episode import EpisodeParseError, parse_episode_url
+from podcast_job_finder.episode import parse_episode_url
+from podcast_job_finder.errors import PodcastJobFinderError
 
 
 USAGE_TEXT: Final = "用法：podcast-inspect-episode <episode_url>"
@@ -20,7 +21,7 @@ def main() -> int:
 
     try:
         episode = parse_episode_url(sys.argv[1])
-    except (EpisodeParseError, ValueError) as error:
+    except PodcastJobFinderError as error:
         print(str(error), file=sys.stderr)
         return 1
 

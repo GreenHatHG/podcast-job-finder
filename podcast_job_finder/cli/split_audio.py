@@ -6,11 +6,8 @@ import sys
 from pathlib import Path
 from typing import Final, Sequence
 
-from podcast_job_finder.audio import (
-    AudioFileDecodeError,
-    AudioSegmentExportError,
-    detect_and_export_speech_segments,
-)
+from podcast_job_finder.audio import detect_and_export_speech_segments
+from podcast_job_finder.errors import PodcastJobFinderError
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.audio.segmentation.segment_export import (
     DEFAULT_SEGMENT_AUDIO_FORMAT,
@@ -37,7 +34,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             audio_format=parse_segment_audio_format(args.segment_audio_format),
             overwrite=args.overwrite,
         )
-    except (AudioFileDecodeError, AudioSegmentExportError, ValueError) as error:
+    except PodcastJobFinderError as error:
         print(str(error), file=sys.stderr)
         return 1
 
