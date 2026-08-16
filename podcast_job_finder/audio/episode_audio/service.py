@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 
 
-DEFAULT_AUDIO_OUTPUT_DIR: Final = Path("output/audio")
 SUPPORTED_AUDIO_EXTENSIONS: Final = frozenset(
     {
         ".aac",

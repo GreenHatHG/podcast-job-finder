@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import sys
-from pathlib import Path
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.transcription.batch import (
@@ -12,6 +11,7 @@ from podcast_job_finder.transcription.batch import (
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
 )
+from podcast_job_finder.output_paths import REPORT_OUTPUT_DIR
 from podcast_job_finder.transcription.pipeline_results import (
     BatchAudioTranscriptionResult,
 )
@@ -229,7 +229,7 @@ def _run_feed_audio_mode(
             feed_id=feed.feed_id,
             runtime=transcription_runtime,
             result=transcription_result,
-            output_dir=Path("output"),
+            output_dir=REPORT_OUTPUT_DIR,
         )
     finally:
         transcription_runtime.close()

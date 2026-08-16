@@ -30,10 +30,14 @@ from podcast_job_finder.transcription.pipeline_results import (
     EpisodeTranscriptionResult,
     SuccessfulEpisodeTranscriptionResult,
 )
+from podcast_job_finder.output_paths import (
+    TRANSCRIPTION_EXTRACTION_DIR_NAME,
+    build_episode_company_extraction_dir,
+)
 
 
-COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME: Final = "company_extraction"
 INVALID_TRANSCRIPTION_PATH_ERROR: Final = "节目结果缺少有效的 transcription_path。"
+INVALID_EPISODE_OUTPUT_DIR_ERROR: Final = "节目结果缺少有效的 episode_output_dir。"
 INVALID_EPISODE_URL_ERROR: Final = "节目结果缺少有效的 episode_url。"
 
 type _PreparedExtraction = tuple[
@@ -144,17 +148,28 @@ def _prepare_extraction_request(
     *,
     resume: bool,
 ) -> TranscriptExtractionRequest:
-    transcription_path = _require_path(episode_transcription.transcription_path)
+    transcription_path = _require_path(
+        episode_transcription.transcription_path,
+        error_message=INVALID_TRANSCRIPTION_PATH_ERROR,
+    )
+    episode_output_dir = _require_path(
+        episode_transcription.episode_output_dir,
+        error_message=INVALID_EPISODE_OUTPUT_DIR_ERROR,
+    )
     work_item = _build_work_item(episode_transcription.episode)
     transcript = load_episode_transcript(transcription_path)
-    checkpoint_root = (
-        transcription_path.parent / COMPANY_EXTRACTION_CHECKPOINT_DIR_NAME
+    checkpoint_root = build_episode_company_extraction_dir(
+        episode_output_dir,
+        TRANSCRIPTION_EXTRACTION_DIR_NAME,
     ).resolve()
     return TranscriptExtractionRequest(
         work_item=work_item,
         title=transcript.title or work_item.title or "",
         segments=transcript.segments,
-        checkpoint_store=LlmCheckpointStore(str(checkpoint_root)),
+        checkpoint_store=LlmCheckpointStore(
+            str(checkpoint_root),
+            directory_suffix=(),
+        ),
         resume=resume,
     )
 
@@ -212,9 +227,9 @@ def _build_error_result(
     )
 
 
-def _require_path(value: str) -> Path:
+def _require_path(value: str, *, error_message: str) -> Path:
     if not value.strip():
-        raise EpisodeProcessingError(INVALID_TRANSCRIPTION_PATH_ERROR)
+        raise EpisodeProcessingError(error_message)
     return Path(value)
 
 

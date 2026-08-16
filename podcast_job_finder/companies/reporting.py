@@ -10,11 +10,14 @@ from podcast_job_finder.filesystem import (
     atomic_write_json,
 )
 from podcast_job_finder.timestamps import build_utc_timestamp
+from podcast_job_finder.output_paths import (
+    COMPANY_EXTRACTION_REPORT_DIR_NAME,
+    COMPANY_SUMMARY_REPORT_DIR_NAME,
+    build_feed_report_dir,
+)
 
 
-OUTPUT_DIR: Final = "output"
-OUTPUT_FILE_TEMPLATE: Final = "result_{feed_id}_{timestamp}.json"
-SUMMARY_FILE_TEMPLATE: Final = "summary_{feed_id}_{timestamp}.json"
+REPORT_FILE_TEMPLATE: Final = "{timestamp}.json"
 OUTPUT_STATUS_SUCCESS: Final = "success"
 
 
@@ -44,7 +47,7 @@ def _save_summary_file(
     episode_payloads: list[dict],
 ) -> str:
     output_path, created_at = _build_output_file_details(
-        SUMMARY_FILE_TEMPLATE,
+        COMPANY_SUMMARY_REPORT_DIR_NAME,
         report_data.feed_id,
     )
     companies = _aggregate_companies(episode_payloads)
@@ -101,7 +104,7 @@ def _save_result_file(
     episode_payloads: list[dict],
 ) -> str:
     output_path, created_at = _build_output_file_details(
-        OUTPUT_FILE_TEMPLATE,
+        COMPANY_EXTRACTION_REPORT_DIR_NAME,
         report_data.feed_id,
     )
     report = _build_base_report(
@@ -120,13 +123,13 @@ def _save_result_file(
     return output_path
 
 
-def _build_output_file_details(template: str, feed_id: str) -> tuple[str, str]:
+def _build_output_file_details(report_dir_name: str, feed_id: str) -> tuple[str, str]:
     timestamp = build_utc_timestamp()
+    output_dir = build_feed_report_dir(feed_id, report_dir_name)
     output_path = str(
-        Path(OUTPUT_DIR)
-        / template.format(feed_id=feed_id, timestamp=timestamp.file_label)
+        output_dir / REPORT_FILE_TEMPLATE.format(timestamp=timestamp.file_label)
     )
-    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     return output_path, timestamp.text
 
 

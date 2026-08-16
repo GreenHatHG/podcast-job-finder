@@ -15,6 +15,7 @@ RESULT_STATUS_ERROR: Final = "error"
 @dataclass(slots=True, frozen=True)
 class SuccessfulEpisodeTranscriptionResult(EpisodeResult):
     cached: bool
+    episode_output_dir: str
     transcription_path: str
     article_path: str | None = None
     transcription_quality_report_path: str | None = None

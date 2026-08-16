@@ -21,10 +21,10 @@ from podcast_job_finder.transcription.runtime import (
 )
 from podcast_job_finder.transcription import local_audio
 from podcast_job_finder.transcription.local_audio import transcribe_local_audio
+from podcast_job_finder.output_paths import LOCAL_TRANSCRIPTION_OUTPUT_DIR
 
 
 PROGRAM_NAME: Final = "podcast-transcribe"
-DEFAULT_OUTPUT_DIR: Final = Path("output/transcription_segments")
 INVALID_MAX_SEGMENTS_ERROR: Final = "max_segments 必须大于 0。"
 LOCAL_AUDIO_SOURCE_TYPE = local_audio.LOCAL_AUDIO_SOURCE_TYPE
 AUTO_SEGMENT_AUDIO_FORMAT: Final = "auto"
@@ -71,7 +71,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
+        default=LOCAL_TRANSCRIPTION_OUTPUT_DIR,
     )
     parser.add_argument("--max-segments", type=_parse_positive_integer)
     parser.add_argument(

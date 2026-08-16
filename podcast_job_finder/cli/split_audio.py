@@ -17,10 +17,10 @@ from podcast_job_finder.audio.segmentation.segment_export import (
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     DEFAULT_SILENCE_PADDING_MS,
 )
+from podcast_job_finder.output_paths import LOCAL_AUDIO_SEGMENTS_OUTPUT_DIR
 
 
 PROGRAM_NAME: Final = "podcast-split-audio"
-DEFAULT_OUTPUT_DIR: Final = Path("output/audio_segments")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -54,7 +54,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_OUTPUT_DIR,
+        default=LOCAL_AUDIO_SEGMENTS_OUTPUT_DIR,
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(

@@ -32,11 +32,16 @@ from podcast_job_finder.transcription.pipeline_results import (
     SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
-from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
 from podcast_job_finder.errors import PodcastJobFinderError
+from podcast_job_finder.output_paths import (
+    EPISODE_OUTPUT_DIR,
+    EPISODE_TRANSCRIPTION_DIR_NAME,
+    TRANSCRIPTION_REPORT_DIR_NAME,
+    build_episode_output_dir,
+)
 
 
-TRANSCRIPTION_REPORT_TEMPLATE: Final = "transcription_result_{feed_id}_{timestamp}.json"
+TRANSCRIPTION_REPORT_TEMPLATE: Final = "{timestamp}.json"
 SAVE_REPORT_ERROR_TEMPLATE: Final = "保存音频转写批次报告失败：{path}，{error_message}"
 SEGMENT_DIR_NAME = episode_transcription.SEGMENT_DIR_NAME
 MISSING_EPISODE_ID_ERROR = episode_transcription.MISSING_EPISODE_ID_ERROR
@@ -54,7 +59,7 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
     *,
     work_items: Sequence[EpisodeWorkItem],
     runtime: AudioTranscriptionRuntime,
-    audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
+    audio_output_dir: Path = EPISODE_OUTPUT_DIR,
     processing_mode: AudioProcessingMode = DEFAULT_AUDIO_PROCESSING_MODE,
     resume: bool = False,
 ) -> BatchAudioTranscriptionResult:
@@ -96,7 +101,7 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
 def load_existing_batch_transcription_result(
     work_items: Sequence[EpisodeWorkItem],
     *,
-    audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
+    audio_output_dir: Path = EPISODE_OUTPUT_DIR,
 ) -> tuple[BatchAudioTranscriptionResult, int]:
     """从已有节目转写清单构造批次结果，并返回缺少清单的节目数量。"""
 
@@ -112,7 +117,12 @@ def load_existing_batch_transcription_result(
             )
             skipped_count += 1
             continue
-        transcription_path = audio_output_dir / eid / TRANSCRIPTION_FILE_NAME
+        episode_output_dir = build_episode_output_dir(audio_output_dir, eid)
+        transcription_path = (
+            episode_output_dir
+            / EPISODE_TRANSCRIPTION_DIR_NAME
+            / TRANSCRIPTION_FILE_NAME
+        )
         if not transcription_path.exists():
             logger.debug(
                 "跳过已有音频转写：原因=缺少转写清单 "
@@ -126,6 +136,7 @@ def load_existing_batch_transcription_result(
         record = SuccessfulEpisodeTranscriptionResult(
             episode=replace(work_item, eid=eid),
             cached=True,
+            episode_output_dir=str(episode_output_dir),
             transcription_path=str(transcription_path),
         )
         episode_results.append(record)
@@ -148,9 +159,9 @@ def save_batch_audio_transcription_report(
     output_dir: Path,
 ) -> Path:
     timestamp = build_utc_timestamp()
-    report_path = output_dir / TRANSCRIPTION_REPORT_TEMPLATE.format(
-        feed_id=feed_id,
-        timestamp=timestamp.file_label,
+    report_dir = output_dir / feed_id / TRANSCRIPTION_REPORT_DIR_NAME
+    report_path = report_dir / TRANSCRIPTION_REPORT_TEMPLATE.format(
+        timestamp=timestamp.file_label
     )
     report = {
         "feed_id": feed_id,
@@ -164,7 +175,7 @@ def save_batch_audio_transcription_report(
         "episodes": [episode.to_dict() for episode in result.episode_results],
     }
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        report_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(
             report_path,
             report,

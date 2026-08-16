@@ -7,11 +7,8 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from podcast_job_finder.logging import configure_logging
-from podcast_job_finder.rss.download import (
-    DEFAULT_RSS_AUDIO_OUTPUT_DIR,
-    DEFAULT_RSS_OUTPUT_DIR,
-    download_rss_feed,
-)
+from podcast_job_finder.output_paths import EPISODE_OUTPUT_DIR, FEED_OUTPUT_DIR
+from podcast_job_finder.rss.download import download_rss_feed
 from podcast_job_finder.rss.feed import RssFeedError
 
 
@@ -54,7 +51,7 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_RSS_OUTPUT_DIR,
+        default=FEED_OUTPUT_DIR,
     )
     parser.add_argument(
         "--list-only",
@@ -64,8 +61,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--audio-output-dir",
         type=Path,
-        default=DEFAULT_RSS_AUDIO_OUTPUT_DIR,
-        help="音频保存目录，默认复用 output/audio。",
+        default=EPISODE_OUTPUT_DIR,
+        help="节目输出根目录，默认使用 output/episodes。",
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser

@@ -23,13 +23,15 @@ from podcast_job_finder.audio.episode_audio.files import (
     prepare_episode_audio_directory,
     store_episode_audio,
 )
-from podcast_job_finder.audio.episode_audio.service import DEFAULT_AUDIO_OUTPUT_DIR
+from podcast_job_finder.output_paths import (
+    EPISODE_OUTPUT_DIR,
+    FEED_OUTPUT_DIR,
+    build_episode_audio_dir,
+)
 
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RSS_OUTPUT_DIR: Final = Path("output/podcasts")
-DEFAULT_RSS_AUDIO_OUTPUT_DIR: Final = DEFAULT_AUDIO_OUTPUT_DIR
 MANIFEST_FILE_NAME: Final = "manifest.json"
 MAX_DIRECTORY_NAME_LENGTH: Final = 100
 FEED_HASH_LENGTH: Final = 8
@@ -92,8 +94,8 @@ class RssDownloadResult:
 def download_rss_feed(
     feed_url: str,
     *,
-    output_dir: Path = DEFAULT_RSS_OUTPUT_DIR,
-    audio_output_dir: Path = DEFAULT_RSS_AUDIO_OUTPUT_DIR,
+    output_dir: Path = FEED_OUTPUT_DIR,
+    audio_output_dir: Path = EPISODE_OUTPUT_DIR,
     overwrite: bool = False,
     list_only: bool = False,
 ) -> RssDownloadResult:
@@ -116,6 +118,7 @@ def download_rss_feed(
             feed,
             manifest_path,
             entries,
+            audio_output_dir=audio_output_dir,
             overwrite=overwrite,
         )
     return _build_download_result(feed, manifest_path, entries)
@@ -126,6 +129,7 @@ def _download_episodes(
     manifest_path: Path,
     entries: list[EpisodeDownloadEntry],
     *,
+    audio_output_dir: Path,
     overwrite: bool,
 ) -> None:
     total_episodes = len(entries)
@@ -147,7 +151,7 @@ def _download_episodes(
         )
         try:
             prepare_episode_audio_directory(
-                target_path.parent.parent,
+                audio_output_dir,
                 episode.episode_id,
             )
             skipped = store_episode_audio(
@@ -185,8 +189,10 @@ def _download_episodes(
 
 def _build_audio_path(audio_output_dir: Path, episode: RssEpisode) -> Path:
     return (
-        audio_output_dir.resolve()
-        / episode.episode_id
+        build_episode_audio_dir(
+            audio_output_dir,
+            episode.episode_id,
+        )
         / f"{SOURCE_FILE_STEM}{episode.extension}"
     )
 

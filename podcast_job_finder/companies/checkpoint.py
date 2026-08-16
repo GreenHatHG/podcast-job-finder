@@ -15,9 +15,17 @@ from podcast_job_finder.filesystem import (
     atomic_write_text,
 )
 from podcast_job_finder.timestamps import build_utc_timestamp
+from podcast_job_finder.output_paths import (
+    COMPANY_EXTRACTION_DIR_NAME,
+    EPISODE_OUTPUT_DIR,
+    PAGE_EXTRACTION_DIR_NAME,
+)
 
 
-CHECKPOINT_ROOT_DIR: Final = os.path.join("output", "checkpoints", "episodes")
+PAGE_CHECKPOINT_DIRECTORY_SUFFIX: Final = (
+    COMPANY_EXTRACTION_DIR_NAME,
+    PAGE_EXTRACTION_DIR_NAME,
+)
 STATE_FILE_NAME: Final = "llm_state.json"
 PROMPT_FILE_NAME: Final = "llm_prompt.txt"
 RESPONSE_FILE_NAME: Final = "llm_response.txt"
@@ -168,8 +176,14 @@ class LlmCheckpointSavePayload:
 
 
 class LlmCheckpointStore:
-    def __init__(self, root_dir: str = CHECKPOINT_ROOT_DIR) -> None:
+    def __init__(
+        self,
+        root_dir: str = str(EPISODE_OUTPUT_DIR),
+        *,
+        directory_suffix: tuple[str, ...] = PAGE_CHECKPOINT_DIRECTORY_SUFFIX,
+    ) -> None:
         self._root_dir = root_dir
+        self._directory_suffix = directory_suffix
 
     def build_episode_key(self, *, eid: str | None, episode_url: str) -> str:
         normalized_eid = (eid or "").strip()
@@ -320,7 +334,11 @@ class LlmCheckpointStore:
             )
 
     def _build_episode_directory(self, episode_key: str) -> str:
-        return os.path.join(self._root_dir, episode_key)
+        return os.path.join(
+            self._root_dir,
+            episode_key,
+            *self._directory_suffix,
+        )
 
     def _read_optional_text_file(self, path: str) -> str | None:
         if not os.path.exists(path):

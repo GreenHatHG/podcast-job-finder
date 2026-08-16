@@ -11,6 +11,10 @@ from typing import BinaryIO, Final, Iterator
 
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.audio.episode_audio.http import download_audio_content
+from podcast_job_finder.output_paths import (
+    build_episode_audio_dir,
+    build_episode_output_dir,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -68,9 +72,34 @@ def build_audio_target_path(output_dir: Path, eid: str, extension: str) -> Path:
 
 
 def prepare_episode_audio_directory(output_dir: Path, eid: str) -> Path:
+    episode_dir = prepare_episode_output_directory(output_dir, eid)
+    audio_dir = build_episode_audio_dir(output_dir, eid)
     try:
-        resolved_output_dir = output_dir.resolve()
-        episode_dir = resolved_output_dir / eid
+        if audio_dir.is_symlink():
+            raise EpisodeAudioDownloadError(
+                EPISODE_DIR_SYMLINK_ERROR.format(path=audio_dir)
+            )
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        if audio_dir.resolve() != audio_dir:
+            raise EpisodeAudioDownloadError(
+                EPISODE_DIR_REDIRECT_ERROR_TEMPLATE.format(
+                    expected_path=audio_dir,
+                    actual_path=audio_dir.resolve(),
+                )
+            )
+        return audio_dir
+    except OSError as error:
+        raise EpisodeAudioDownloadError(
+            PREPARE_OUTPUT_DIR_ERROR_TEMPLATE.format(
+                path=episode_dir,
+                error_message=str(error),
+            )
+        ) from error
+
+
+def prepare_episode_output_directory(output_dir: Path, eid: str) -> Path:
+    try:
+        episode_dir = build_episode_output_dir(output_dir, eid)
         if episode_dir.is_symlink():
             raise EpisodeAudioDownloadError(
                 EPISODE_DIR_SYMLINK_ERROR.format(path=episode_dir)

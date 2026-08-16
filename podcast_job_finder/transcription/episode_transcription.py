@@ -11,13 +11,10 @@ from podcast_job_finder.audio import ExportedSpeechSegment
 from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
 from podcast_job_finder.audio.episode_audio.files import (
     build_audio_target_path,
-    prepare_episode_audio_directory,
+    prepare_episode_output_directory,
     store_episode_audio,
 )
-from podcast_job_finder.audio.episode_audio.service import (
-    DEFAULT_AUDIO_OUTPUT_DIR,
-    extract_audio_extension,
-)
+from podcast_job_finder.audio.episode_audio.service import extract_audio_extension
 from podcast_job_finder.audio.segmentation.speech_segment_checkpoint import (
     SPEECH_SEGMENT_CHECKPOINT_FILE_NAME,
     restore_or_export_speech_segments,
@@ -50,6 +47,11 @@ from podcast_job_finder.transcription.quality_report import (
 )
 from podcast_job_finder.transcription.runtime import AudioTranscriptionRuntime
 from podcast_job_finder.errors import EpisodeProcessingError
+from podcast_job_finder.output_paths import (
+    EPISODE_OUTPUT_DIR,
+    EPISODE_AUDIO_DIR_NAME,
+    EPISODE_TRANSCRIPTION_DIR_NAME,
+)
 
 
 SEGMENT_DIR_NAME: Final = "segments"
@@ -63,7 +65,13 @@ logger = logging.getLogger(__name__)
 class _EpisodeTranscriptionContext:
     work_item: EpisodeWorkItem
     eid: str
-    transcription_path: Path
+    episode_dir: Path
+
+    @property
+    def transcription_path(self) -> Path:
+        return (
+            self.episode_dir / EPISODE_TRANSCRIPTION_DIR_NAME / TRANSCRIPTION_FILE_NAME
+        )
 
     @property
     def article_path(self) -> Path:
@@ -75,11 +83,15 @@ class _EpisodeTranscriptionContext:
 
     @property
     def segment_checkpoint_path(self) -> Path:
-        return self.transcription_path.with_name(SPEECH_SEGMENT_CHECKPOINT_FILE_NAME)
+        return (
+            self.episode_dir
+            / EPISODE_AUDIO_DIR_NAME
+            / SPEECH_SEGMENT_CHECKPOINT_FILE_NAME
+        )
 
     @property
     def segment_dir(self) -> Path:
-        return self.transcription_path.parent / SEGMENT_DIR_NAME
+        return self.episode_dir / EPISODE_AUDIO_DIR_NAME / SEGMENT_DIR_NAME
 
 
 @dataclass(slots=True, frozen=True)
@@ -92,7 +104,7 @@ class DownloadedEpisodeAudio:
 def prepare_episode_audio(
     *,
     work_item: EpisodeWorkItem,
-    audio_output_dir: Path = DEFAULT_AUDIO_OUTPUT_DIR,
+    audio_output_dir: Path = EPISODE_OUTPUT_DIR,
     resume: bool,
 ) -> DownloadedEpisodeAudio | EpisodeTranscriptionResult:
     """准备单个节目的本地音频，命中完整清单时直接返回成功记录。"""
@@ -117,6 +129,7 @@ def prepare_episode_audio(
             return SuccessfulEpisodeTranscriptionResult(
                 episode=replace(context.work_item, eid=context.eid),
                 cached=True,
+                episode_output_dir=str(context.episode_dir),
                 transcription_path=str(context.transcription_path),
                 article_path=str(context.article_path),
                 transcription_quality_report_path=str(context.quality_report_path),
@@ -189,6 +202,7 @@ def transcribe_prepared_episode(
         return SuccessfulEpisodeTranscriptionResult(
             episode=replace(context.work_item, eid=context.eid),
             cached=all_segments_cached,
+            episode_output_dir=str(context.episode_dir),
             transcription_path=str(context.transcription_path),
             article_path=str(context.article_path),
             transcription_quality_report_path=str(context.quality_report_path),
@@ -230,11 +244,11 @@ def _build_episode_context(
         raise EpisodeProcessingError(
             MISSING_EPISODE_ID_ERROR.format(url=work_item.episode_url)
         )
-    episode_output_dir = prepare_episode_audio_directory(audio_output_dir, eid)
+    episode_output_dir = prepare_episode_output_directory(audio_output_dir, eid)
     return _EpisodeTranscriptionContext(
         work_item=work_item,
         eid=eid,
-        transcription_path=episode_output_dir / TRANSCRIPTION_FILE_NAME,
+        episode_dir=episode_output_dir,
     )
 
 
