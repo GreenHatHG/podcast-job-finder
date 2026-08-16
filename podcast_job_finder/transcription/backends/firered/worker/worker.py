@@ -99,6 +99,7 @@ def main() -> int:
             ort_intra_op_threads=args.ort_intra_op_threads,
         )
     except Exception as error:  # pylint: disable=broad-exception-caught
+        logger.exception("FireRed 初始化失败")
         write_response({"status": ERROR_STATUS, "error": str(error)})
         return 1
 

@@ -24,6 +24,7 @@ from podcast_job_finder.transcription.diagnostics import (
 from podcast_job_finder.audio.segmentation.vad import VAD_SAMPLE_RATE
 from podcast_job_finder.filesystem import OWNER_READ_WRITE_MODE, temporary_sibling_path
 
+from .request_client import DoubaoRequestError
 from .response import (
     AsrResponseProtocol,
     DOUBAO_RESPONSE_ERROR,
@@ -42,7 +43,7 @@ class ProbeResponseTypes(Protocol):
     ERROR: object
 
 
-ProbeResponse = list[AsrResponseProtocol] | BaseException
+ProbeResponse = list[AsrResponseProtocol] | DoubaoRequestError
 CollectResponses = Callable[
     [Path],
     Coroutine[Any, Any, list[AsrResponseProtocol]],
@@ -74,7 +75,7 @@ def run_doubao_truncation_probe(
     ) as probe:
         try:
             responses: ProbeResponse = asyncio.run(collect_responses(probe.path))
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except DoubaoRequestError as error:
             responses = error
         return _build_probe_diagnostics(probe, responses, response_types=response_types)
 
@@ -85,7 +86,7 @@ def _build_probe_diagnostics(
     *,
     response_types: ProbeResponseTypes,
 ) -> TruncationProbeDiagnostics:
-    if isinstance(responses, BaseException):
+    if isinstance(responses, DoubaoRequestError):
         return TruncationProbeDiagnostics(
             start_ms=probe.start_ms,
             end_ms=probe.end_ms,

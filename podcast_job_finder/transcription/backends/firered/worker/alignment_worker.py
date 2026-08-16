@@ -42,6 +42,7 @@ def main() -> int:
             }
         )
     except Exception as error:  # pylint: disable=broad-exception-caught
+        logger.exception("FireRed CTC 初始化失败")
         write_response({"status": ERROR_STATUS, "error": str(error)})
         return 1
 
