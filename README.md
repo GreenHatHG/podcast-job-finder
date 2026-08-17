@@ -234,16 +234,30 @@ podcast_job_finder/
 
 ## 开发检查
 
-安装开发依赖并运行项目配置的检查：
+安装开发依赖后，日常开发只对本次修改的文件运行检查。下面的文件路径可以填写多个：
 
 ```bash
 uv sync --group dev
+uv run pre-commit run --files path/to/changed_file.py
+```
+
+`ruff-check` 和 `ruff-format` 会直接修改传入的文件。只有准备检查并格式化整个仓库时，才运行：
+
+```bash
 uv run pre-commit run --all-files
 ```
 
-单独运行静态检查：
+单独运行不会修改代码的类型检查：
 
 ```bash
 uv run mypy .
 uv run pyright
 ```
+
+重复代码检查属于人工审查信号，不在普通 pre-commit 阶段执行。需要检查时运行：
+
+```bash
+uv run pre-commit run --hook-stage manual jscpd --all-files
+```
+
+`jscpd` 只判断代码文本是否相似。出现重复报告后，还需要确认这些代码是否表达同一业务规则；含义或变化原因不同的代码不应为了通过检查而强行共用抽象。
