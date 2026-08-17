@@ -22,7 +22,7 @@ OUTPUT_STATUS_SUCCESS: Final = "success"
 
 
 @dataclass(slots=True, frozen=True)
-class FeedReportData:
+class FeedReportData:  # pylint: disable=too-many-instance-attributes
     feed_id: str
     model: str
     base_url: str | None
@@ -30,6 +30,7 @@ class FeedReportData:
     success: int
     failed: int
     episodes: Sequence[EpisodeResult]
+    podcast_title: str = "podcast"
 
 
 def save_feed_reports(report_data: FeedReportData) -> tuple[str, str]:
@@ -49,6 +50,7 @@ def _save_summary_file(
     output_path, created_at = _build_output_file_details(
         COMPANY_SUMMARY_REPORT_DIR_NAME,
         report_data.feed_id,
+        report_data.podcast_title,
     )
     companies = _aggregate_companies(episode_payloads)
     report = _build_base_report(
@@ -106,6 +108,7 @@ def _save_result_file(
     output_path, created_at = _build_output_file_details(
         COMPANY_EXTRACTION_REPORT_DIR_NAME,
         report_data.feed_id,
+        report_data.podcast_title,
     )
     report = _build_base_report(
         report_data=report_data,
@@ -123,9 +126,17 @@ def _save_result_file(
     return output_path
 
 
-def _build_output_file_details(report_dir_name: str, feed_id: str) -> tuple[str, str]:
+def _build_output_file_details(
+    report_dir_name: str,
+    feed_id: str,
+    podcast_title: str,
+) -> tuple[str, str]:
     timestamp = build_utc_timestamp()
-    output_dir = build_feed_report_dir(feed_id, report_dir_name)
+    output_dir = build_feed_report_dir(
+        feed_id,
+        report_dir_name,
+        podcast_title=podcast_title,
+    )
     output_path = str(
         output_dir / REPORT_FILE_TEMPLATE.format(timestamp=timestamp.file_label)
     )
@@ -143,6 +154,7 @@ def _build_base_report(
 ) -> dict[str, object]:
     return {
         "feed_id": report_data.feed_id,
+        "podcast_title": report_data.podcast_title,
         "model": report_data.model,
         "base_url": report_data.base_url,
         "created_at": created_at,

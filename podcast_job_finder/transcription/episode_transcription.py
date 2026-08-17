@@ -143,7 +143,13 @@ def prepare_episode_audio(
                 MISSING_AUDIO_URL_ERROR.format(eid=context.eid)
             )
         extension = extract_audio_extension(source_url)
-        local_path = build_audio_target_path(audio_output_dir, context.eid, extension)
+        local_path = build_audio_target_path(
+            audio_output_dir,
+            context.eid,
+            extension,
+            podcast_title=work_item.podcast_title,
+            episode_title=work_item.title,
+        )
         store_episode_audio(source_url, local_path, overwrite=False)
         return DownloadedEpisodeAudio(
             context=context,
@@ -221,6 +227,7 @@ def _build_segment_checkpoint_store(
 ) -> SegmentTranscriptionCheckpointStore:
     metadata = {
         "eid": context.eid,
+        "podcast_title": context.work_item.podcast_title,
         "episode_url": context.work_item.episode_url,
         "title": context.work_item.title,
         "pub_date": context.work_item.pub_date,
@@ -244,7 +251,12 @@ def _build_episode_context(
         raise EpisodeProcessingError(
             MISSING_EPISODE_ID_ERROR.format(url=work_item.episode_url)
         )
-    episode_output_dir = prepare_episode_output_directory(audio_output_dir, eid)
+    episode_output_dir = prepare_episode_output_directory(
+        audio_output_dir,
+        eid,
+        podcast_title=work_item.podcast_title,
+        episode_title=work_item.title,
+    )
     return _EpisodeTranscriptionContext(
         work_item=work_item,
         eid=eid,
@@ -274,6 +286,7 @@ def _save_episode_transcription(
         context.transcription_path,
         metadata={
             "eid": context.eid,
+            "podcast_title": context.work_item.podcast_title,
             "title": context.work_item.title,
             "pub_date": context.work_item.pub_date,
             "episode_url": context.work_item.episode_url,

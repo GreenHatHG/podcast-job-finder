@@ -128,6 +128,7 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
         EpisodeWorkItem(
             episode_url=build_episode_url(episode.episode_id),
             eid=episode.episode_id,
+            podcast_title=feed.title,
             title=episode.title,
             pub_date=episode.published_at,
             audio_url=episode.audio_url,
@@ -196,6 +197,7 @@ def _run_feed_page_mode(feed: RssFeed, work_items: Sequence[EpisodeWorkItem]) ->
     output_path, summary_path = save_feed_reports(
         FeedReportData(
             feed_id=feed.feed_id,
+            podcast_title=feed.title,
             model=extraction_runtime.llm.model,
             base_url=extraction_runtime.llm.base_url,
             total=len(work_items),
@@ -227,6 +229,7 @@ def _run_feed_audio_mode(
         )
         report_path = save_batch_audio_transcription_report(
             feed_id=feed.feed_id,
+            podcast_title=feed.title,
             runtime=transcription_runtime,
             result=transcription_result,
             output_dir=REPORT_OUTPUT_DIR,
@@ -280,6 +283,7 @@ def _run_audio_company_extraction(
     output_path, summary_path = save_feed_reports(
         FeedReportData(
             feed_id=feed.feed_id,
+            podcast_title=feed.title,
             model=extraction_runtime.llm.model,
             base_url=extraction_runtime.llm.base_url,
             total=len(transcription_result.episode_results),

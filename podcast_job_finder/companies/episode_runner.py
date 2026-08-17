@@ -46,6 +46,7 @@ class PreparedEpisodeLlmWork:
         return LlmCheckpointSavePayload(
             episode_key=self.episode_key,
             episode_url=self.episode.episode_url,
+            podcast_title=self.episode.podcast_title,
             title=self.episode.title,
             pub_date=self.episode.pub_date,
             runtime_signature=runtime_signature,
@@ -62,6 +63,7 @@ class _EpisodeCheckpointContext:
     def build_prepared_work(
         self,
         *,
+        podcast_title: str | None,
         title: str | None,
         pub_date: str | None,
         prompt_text: str,
@@ -69,6 +71,7 @@ class _EpisodeCheckpointContext:
         return PreparedEpisodeLlmWork(
             episode=replace(
                 self.episode,
+                podcast_title=podcast_title,
                 title=title,
                 pub_date=pub_date,
             ),
@@ -151,6 +154,10 @@ def restore_success_checkpoint(
     return CompletedEpisodeExtraction(
         episode=replace(
             checkpoint_context.episode,
+            podcast_title=_resolve_text(
+                checkpoint.state.podcast_title,
+                work_item.podcast_title,
+            ),
             title=_resolve_text(checkpoint.state.title, work_item.title),
             pub_date=_resolve_text(checkpoint.state.pub_date, work_item.pub_date),
         ),
@@ -184,6 +191,10 @@ def prepare_episode_llm_work(
         ):
             logger.info("命中未完成检查点，直接继续 LLM：episode_key=%s", episode_key)
             return checkpoint_context.build_prepared_work(
+                podcast_title=_resolve_text(
+                    checkpoint.state.podcast_title,
+                    work_item.podcast_title,
+                ),
                 title=_resolve_text(checkpoint.state.title, work_item.title),
                 pub_date=_resolve_text(
                     checkpoint.state.pub_date,
@@ -197,6 +208,7 @@ def prepare_episode_llm_work(
     prompt_text = build_company_extraction_prompt(episode)
     title = _resolve_text(episode.title, work_item.title)
     prepared_work = checkpoint_context.build_prepared_work(
+        podcast_title=_resolve_text(episode.podcast_title, work_item.podcast_title),
         title=title,
         pub_date=work_item.pub_date,
         prompt_text=prompt_text,
@@ -256,7 +268,11 @@ def _load_episode_checkpoint_context(
     return _EpisodeCheckpointContext(
         episode=resolved_episode,
         episode_key=episode_key,
-        checkpoint=checkpoint_store.load(episode_key),
+        checkpoint=checkpoint_store.load(
+            episode_key,
+            podcast_title=work_item.podcast_title,
+            episode_title=work_item.title,
+        ),
     )
 
 

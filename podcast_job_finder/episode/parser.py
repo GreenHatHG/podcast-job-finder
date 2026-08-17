@@ -78,12 +78,30 @@ def parse_episode_html(html_text: str) -> EpisodeInfo:
     return EpisodeInfo(
         title=_clean_text(str(episode_data.get("title") or "")),
         content=_extract_episode_content(episode_data),
+        podcast_title=_extract_podcast_title(episode_data),
         audio_url=_extract_audio_url(episode_data),
         comments=[
             _parse_comment(comment_data, f"{comments_field_path}[{comment_index}]")
             for comment_index, comment_data in enumerate(comments_data)
         ],
     )
+
+
+def _extract_podcast_title(episode_data: dict[str, object]) -> str | None:
+    podcast_data = _require_optional_dict(
+        episode_data.get("podcast"),
+        "props.pageProps.episode.podcast",
+    )
+    title = podcast_data.get("title")
+    if title is None:
+        return None
+    if not isinstance(title, str):
+        raise _build_page_data_error(
+            field_path="props.pageProps.episode.podcast.title",
+            expected_type=JSON_STRING_TYPE_DESCRIPTION,
+            actual_value=title,
+        )
+    return _clean_text(title) or None
 
 
 def _extract_page_props(html_text: str) -> dict[str, object]:

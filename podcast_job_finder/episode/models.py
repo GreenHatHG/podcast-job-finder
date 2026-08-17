@@ -52,6 +52,7 @@ class EpisodeInfo:
     content: str
     audio_url: str | None = None
     comments: list[CommentInfo] = field(default_factory=list)
+    podcast_title: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -87,6 +88,7 @@ class EpisodeWorkItem:
     title: str | None = None
     pub_date: str | None = None
     audio_url: str | None = None
+    podcast_title: str | None = None
 
     def resolve_episode_id(self) -> str | None:
         normalized_eid = (self.eid or "").strip()
@@ -103,6 +105,7 @@ class EpisodeResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "eid": self.episode.eid,
+            "podcast_title": self.episode.podcast_title,
             "title": self.episode.title,
             "pub_date": self.episode.pub_date,
             "episode_url": self.episode.episode_url,

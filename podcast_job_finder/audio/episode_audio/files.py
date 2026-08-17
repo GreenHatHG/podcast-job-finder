@@ -13,7 +13,7 @@ from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadEr
 from podcast_job_finder.audio.episode_audio.http import download_audio_content
 from podcast_job_finder.output_paths import (
     build_episode_audio_dir,
-    build_episode_output_dir,
+    find_episode_output_dir,
 )
 
 
@@ -66,14 +66,42 @@ REMOVE_PARTIAL_AUDIO_ERROR_TEMPLATE: Final = (
 )
 
 
-def build_audio_target_path(output_dir: Path, eid: str, extension: str) -> Path:
-    episode_dir = prepare_episode_audio_directory(output_dir, eid)
+def build_audio_target_path(
+    output_dir: Path,
+    eid: str,
+    extension: str,
+    *,
+    podcast_title: str | None = None,
+    episode_title: str | None = None,
+) -> Path:
+    episode_dir = prepare_episode_audio_directory(
+        output_dir,
+        eid,
+        podcast_title=podcast_title,
+        episode_title=episode_title,
+    )
     return episode_dir / f"{SOURCE_FILE_STEM}{extension}"
 
 
-def prepare_episode_audio_directory(output_dir: Path, eid: str) -> Path:
-    episode_dir = prepare_episode_output_directory(output_dir, eid)
-    audio_dir = build_episode_audio_dir(output_dir, eid)
+def prepare_episode_audio_directory(
+    output_dir: Path,
+    eid: str,
+    *,
+    podcast_title: str | None = None,
+    episode_title: str | None = None,
+) -> Path:
+    episode_dir = prepare_episode_output_directory(
+        output_dir,
+        eid,
+        podcast_title=podcast_title,
+        episode_title=episode_title,
+    )
+    audio_dir = build_episode_audio_dir(
+        output_dir,
+        eid,
+        podcast_title=podcast_title,
+        episode_title=episode_title,
+    )
     try:
         if audio_dir.is_symlink():
             raise EpisodeAudioDownloadError(
@@ -97,9 +125,20 @@ def prepare_episode_audio_directory(output_dir: Path, eid: str) -> Path:
         ) from error
 
 
-def prepare_episode_output_directory(output_dir: Path, eid: str) -> Path:
+def prepare_episode_output_directory(
+    output_dir: Path,
+    eid: str,
+    *,
+    podcast_title: str | None = None,
+    episode_title: str | None = None,
+) -> Path:
     try:
-        episode_dir = build_episode_output_dir(output_dir, eid)
+        episode_dir = find_episode_output_dir(
+            output_dir,
+            eid,
+            podcast_title=podcast_title,
+            episode_title=episode_title,
+        )
         if episode_dir.is_symlink():
             raise EpisodeAudioDownloadError(
                 EPISODE_DIR_SYMLINK_ERROR.format(path=episode_dir)

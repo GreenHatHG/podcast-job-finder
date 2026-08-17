@@ -191,6 +191,7 @@ def _run_cached_extraction(
     payload = LlmCheckpointSavePayload(
         episode_key=checkpoint_key,
         episode_url=context.work_item.episode_url,
+        podcast_title=context.work_item.podcast_title,
         title=context.work_item.title,
         pub_date=context.work_item.pub_date,
         runtime_signature=None,

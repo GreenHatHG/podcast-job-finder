@@ -169,6 +169,7 @@ def _prepare_extraction_request(
         checkpoint_store=LlmCheckpointStore(
             str(checkpoint_root),
             directory_suffix=(),
+            use_readable_episode_directory=False,
         ),
         resume=resume,
     )
@@ -239,6 +240,7 @@ def _build_work_item(episode: EpisodeWorkItem) -> EpisodeWorkItem:
     return EpisodeWorkItem(
         episode_url=episode.episode_url,
         eid=_optional_text(episode.eid),
+        podcast_title=_optional_text(episode.podcast_title),
         title=_optional_text(episode.title),
         pub_date=_optional_text(episode.pub_date),
     )

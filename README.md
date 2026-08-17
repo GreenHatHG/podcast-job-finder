@@ -109,7 +109,7 @@ uv run podcast-find-jobs \
 }
 ```
 
-单集处理无需登录。生成的提示词与大语言模型调用结果会保存到 `output/episodes/<eid>/company_extraction/page/`，后续使用相同模型配置、黑名单和提示词时会直接复用成功结果。
+单集处理无需登录。生成的提示词与大语言模型调用结果会保存到 `output/episodes/<播客名>-<节目名>-eid=<节目ID>/company_extraction/page/`，后续使用相同模型配置、黑名单和提示词时会直接复用成功结果。
 
 ### 查看单集页面内容
 
@@ -132,7 +132,7 @@ uv run podcast-find-jobs \
   --resume
 ```
 
-RSS 的节目 ID 和音频地址会直接用于检查 `output/episodes/<eid>/`，已有音频和有效转写缓存不会重新下载或转写。批次报告保存在 `output/reports/<feed_id>/`，其中 `feed_id` 是 RSS 地址 SHA-256 哈希的前 16 位，不再需要手工指定播客 ID。
+RSS 的节目 ID 和音频地址会直接用于检查 `output/episodes/<播客名>-<节目名>-eid=<节目ID>/`，已有音频和有效转写缓存不会重新下载或转写。批次报告保存在 `output/reports/<播客名>-feed=<feed_id>/`，其中 `feed_id` 是 RSS 地址 SHA-256 哈希的前 16 位，不再需要手工指定播客 ID。
 
 音频公司提取默认重新调用大语言模型；需要复用已有的分段和合并检查点时显式添加 `--resume`。恢复时会检查三个检查点文件、节目地址和实体证据，检查失败会重新调用大语言模型。只重新提取公司时，可以同时使用 `--extract-only --resume`。
 
@@ -149,7 +149,7 @@ uv run podcast-download-rss \
   https://proxy.wavpub.com/35huan.xml
 ```
 
-每档播客的清单会保存在 `output/feeds/<播客名>-<RSS地址摘要>/manifest.json`，其中包含节目标题、发布日期、原始音频 URL、声明的文件大小、本地路径和下载状态。音频默认保存在 `output/episodes/<节目ID>/audio/source.<扩展名>`，节目 ID 直接使用 RSS 的 `guid`；小宇宙 RSS 中该值与原有 `eid` 相同，因此会直接复用已有音频和转写目录。
+每档播客的清单会保存在 `output/feeds/<播客名>-<RSS地址摘要>/manifest.json`，其中包含节目标题、发布日期、原始音频 URL、声明的文件大小、本地路径和下载状态。音频默认保存在 `output/episodes/<播客名>-<节目名>-eid=<节目ID>/audio/source.<扩展名>`，节目 ID 直接使用 RSS 的 `guid`；小宇宙 RSS 中该值与原有 `eid` 相同，因此会直接复用已有音频和转写目录。目录名中的文件系统保留字符会替换为下划线，名称过长时会按 UTF-8 字节数截断，末尾节目 ID 始终保留。
 
 已有的非空音频文件默认跳过，因此任务中断后可以直接重新执行同一命令。只生成完整清单并在下载前检查预计空间时使用：
 
@@ -173,8 +173,8 @@ from pathlib import Path
 from podcast_job_finder.audio import detect_and_export_speech_segments
 
 segments = detect_and_export_speech_segments(
-    Path("output/episodes/<eid>/audio/source.m4a"),
-    output_dir=Path("output/episodes/<eid>/audio/segments"),
+    Path("output/episodes/<播客名>-<节目名>-eid=<节目ID>/audio/source.m4a"),
+    output_dir=Path("output/episodes/<播客名>-<节目名>-eid=<节目ID>/audio/segments"),
 )
 
 for segment in segments:
@@ -188,7 +188,7 @@ for segment in segments:
 ```text
 output/
 ├── episodes/
-│   └── <eid>/
+│   └── <播客名>-<节目名>-eid=<节目ID>/
 │       ├── audio/
 │       │   ├── source.<扩展名>
 │       │   ├── speech_segments.json
@@ -203,7 +203,7 @@ output/
 ├── feeds/
 │   └── <播客名>-<RSS地址摘要>/manifest.json
 ├── reports/
-│   └── <feed_id>/
+│   └── <播客名>-feed=<feed_id>/
 │       ├── transcription/<UTC时间>.json
 │       ├── company_extraction/<UTC时间>.json
 │       └── company_summary/<UTC时间>.json

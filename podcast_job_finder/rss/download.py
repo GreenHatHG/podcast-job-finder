@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -24,18 +23,18 @@ from podcast_job_finder.audio.episode_audio.files import (
     store_episode_audio,
 )
 from podcast_job_finder.output_paths import (
+    EPISODE_AUDIO_DIR_NAME,
     EPISODE_OUTPUT_DIR,
     FEED_OUTPUT_DIR,
-    build_episode_audio_dir,
+    build_named_directory_name,
+    find_episode_output_dir,
 )
 
 
 logger = logging.getLogger(__name__)
 
 MANIFEST_FILE_NAME: Final = "manifest.json"
-MAX_DIRECTORY_NAME_LENGTH: Final = 100
 FEED_HASH_LENGTH: Final = 8
-INVALID_DIRECTORY_CHARACTERS: Final = re.compile(r'[\x00-\x1f<>:"/\\|?*]+')
 PREPARE_PODCAST_DIR_ERROR_TEMPLATE: Final = (
     "创建播客输出目录失败：{path}，{error_message}"
 )
@@ -106,7 +105,7 @@ def download_rss_feed(
     entries = [
         EpisodeDownloadEntry(
             episode=episode,
-            local_path=_build_audio_path(audio_output_dir, episode),
+            local_path=_build_audio_path(audio_output_dir, feed.title, episode),
             status=initial_status,
         )
         for episode in feed.episodes
@@ -153,6 +152,8 @@ def _download_episodes(
             prepare_episode_audio_directory(
                 audio_output_dir,
                 episode.episode_id,
+                podcast_title=feed.title,
+                episode_title=episode.title,
             )
             skipped = store_episode_audio(
                 episode.audio_url,
@@ -187,12 +188,19 @@ def _download_episodes(
         _save_manifest(manifest_path, feed, entries, list_only=False)
 
 
-def _build_audio_path(audio_output_dir: Path, episode: RssEpisode) -> Path:
+def _build_audio_path(
+    audio_output_dir: Path,
+    podcast_title: str,
+    episode: RssEpisode,
+) -> Path:
     return (
-        build_episode_audio_dir(
+        find_episode_output_dir(
             audio_output_dir,
             episode.episode_id,
+            podcast_title=podcast_title,
+            episode_title=episode.title,
         )
+        / EPISODE_AUDIO_DIR_NAME
         / f"{SOURCE_FILE_STEM}{episode.extension}"
     )
 
@@ -266,9 +274,5 @@ def _prepare_podcast_directory(output_dir: Path, feed: RssFeed) -> Path:
 
 
 def _build_podcast_directory_name(feed: RssFeed) -> str:
-    safe_title = INVALID_DIRECTORY_CHARACTERS.sub("_", feed.title).strip(" ._")
-    if not safe_title:
-        safe_title = "podcast"
-    safe_title = safe_title[:MAX_DIRECTORY_NAME_LENGTH].rstrip(" ._")
     feed_hash = hashlib.sha256(feed.source_url.encode()).hexdigest()[:FEED_HASH_LENGTH]
-    return f"{safe_title}-{feed_hash}"
+    return build_named_directory_name(feed.title, identifier=feed_hash)

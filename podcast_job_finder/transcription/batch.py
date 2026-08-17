@@ -37,7 +37,8 @@ from podcast_job_finder.output_paths import (
     EPISODE_OUTPUT_DIR,
     EPISODE_TRANSCRIPTION_DIR_NAME,
     TRANSCRIPTION_REPORT_DIR_NAME,
-    build_episode_output_dir,
+    find_episode_output_dir,
+    build_feed_report_dir,
 )
 
 
@@ -117,7 +118,12 @@ def load_existing_batch_transcription_result(
             )
             skipped_count += 1
             continue
-        episode_output_dir = build_episode_output_dir(audio_output_dir, eid)
+        episode_output_dir = find_episode_output_dir(
+            audio_output_dir,
+            eid,
+            podcast_title=work_item.podcast_title,
+            episode_title=work_item.title,
+        )
         transcription_path = (
             episode_output_dir
             / EPISODE_TRANSCRIPTION_DIR_NAME
@@ -157,14 +163,21 @@ def save_batch_audio_transcription_report(
     runtime: AudioTranscriptionRuntime,
     result: BatchAudioTranscriptionResult,
     output_dir: Path,
+    podcast_title: str = "podcast",
 ) -> Path:
     timestamp = build_utc_timestamp()
-    report_dir = output_dir / feed_id / TRANSCRIPTION_REPORT_DIR_NAME
+    report_dir = build_feed_report_dir(
+        feed_id,
+        TRANSCRIPTION_REPORT_DIR_NAME,
+        podcast_title=podcast_title,
+        output_dir=output_dir,
+    )
     report_path = report_dir / TRANSCRIPTION_REPORT_TEMPLATE.format(
         timestamp=timestamp.file_label
     )
     report = {
         "feed_id": feed_id,
+        "podcast_title": podcast_title,
         "source": "audio",
         **runtime.metadata,
         "segment_audio_format": runtime.segment_audio_format,

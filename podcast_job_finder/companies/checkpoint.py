@@ -19,6 +19,7 @@ from podcast_job_finder.output_paths import (
     COMPANY_EXTRACTION_DIR_NAME,
     EPISODE_OUTPUT_DIR,
     PAGE_EXTRACTION_DIR_NAME,
+    find_episode_output_dir,
 )
 
 
@@ -50,11 +51,13 @@ class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
     filtered_count: int
     error: str | None
     updated_at: str
+    podcast_title: str | None = None
 
     def to_dict(self) -> dict:
         payload: dict[str, object] = {
             "status": self.status,
             "episode_url": self.episode_url,
+            "podcast_title": self.podcast_title,
             "title": self.title,
             "pub_date": self.pub_date,
             "companies": self.companies,
@@ -89,6 +92,10 @@ class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
             payload.get("title"),
             "检查点中的 title 必须是字符串或 null。",
         )
+        podcast_title = _require_optional_checkpoint_text(
+            payload.get("podcast_title"),
+            "检查点中的 podcast_title 必须是字符串或 null。",
+        )
         pub_date = _require_optional_checkpoint_text(
             payload.get("pub_date"),
             "检查点中的 pub_date 必须是字符串或 null。",
@@ -105,6 +112,7 @@ class LlmCheckpointState:  # pylint: disable=too-many-instance-attributes
         return cls(
             status=status,
             episode_url=episode_url,
+            podcast_title=podcast_title,
             title=title,
             pub_date=pub_date,
             runtime_signature=runtime_signature,
@@ -173,6 +181,7 @@ class LlmCheckpointSavePayload:
     pub_date: str | None
     runtime_signature: str | None
     prompt_text: str
+    podcast_title: str | None = None
 
 
 class LlmCheckpointStore:
@@ -181,9 +190,11 @@ class LlmCheckpointStore:
         root_dir: str = str(EPISODE_OUTPUT_DIR),
         *,
         directory_suffix: tuple[str, ...] = PAGE_CHECKPOINT_DIRECTORY_SUFFIX,
+        use_readable_episode_directory: bool = True,
     ) -> None:
         self._root_dir = root_dir
         self._directory_suffix = directory_suffix
+        self._use_readable_episode_directory = use_readable_episode_directory
 
     def build_episode_key(self, *, eid: str | None, episode_url: str) -> str:
         normalized_eid = (eid or "").strip()
@@ -194,8 +205,18 @@ class LlmCheckpointStore:
         digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
         return f"{URL_HASH_PREFIX}{digest[:URL_HASH_LENGTH]}"
 
-    def load(self, episode_key: str) -> LlmCheckpoint | None:
-        directory_path = self._build_episode_directory(episode_key)
+    def load(
+        self,
+        episode_key: str,
+        *,
+        podcast_title: str | None = None,
+        episode_title: str | None = None,
+    ) -> LlmCheckpoint | None:
+        directory_path = self._build_episode_directory(
+            episode_key,
+            podcast_title=podcast_title,
+            episode_title=episode_title,
+        )
         state_path = os.path.join(directory_path, STATE_FILE_NAME)
         if not os.path.exists(state_path):
             return None
@@ -294,6 +315,7 @@ class LlmCheckpointStore:
         return LlmCheckpointState(
             status=status,
             episode_url=payload.episode_url,
+            podcast_title=payload.podcast_title,
             title=payload.title,
             pub_date=payload.pub_date,
             runtime_signature=payload.runtime_signature,
@@ -311,7 +333,11 @@ class LlmCheckpointStore:
         prompt_text: str,
         response_text: str | None,
     ) -> None:
-        directory_path = self._build_episode_directory(episode_key)
+        directory_path = self._build_episode_directory(
+            episode_key,
+            podcast_title=state.podcast_title,
+            episode_title=state.title,
+        )
         os.makedirs(directory_path, exist_ok=True)
         atomic_write_json(
             Path(os.path.join(directory_path, STATE_FILE_NAME)),
@@ -333,7 +359,21 @@ class LlmCheckpointStore:
                 mode=DEFAULT_FILE_CREATION_MODE,
             )
 
-    def _build_episode_directory(self, episode_key: str) -> str:
+    def _build_episode_directory(
+        self,
+        episode_key: str,
+        *,
+        podcast_title: str | None = None,
+        episode_title: str | None = None,
+    ) -> str:
+        if self._use_readable_episode_directory:
+            episode_dir = find_episode_output_dir(
+                Path(self._root_dir),
+                episode_key,
+                podcast_title=podcast_title,
+                episode_title=episode_title,
+            )
+            return os.path.join(str(episode_dir), *self._directory_suffix)
         return os.path.join(
             self._root_dir,
             episode_key,
