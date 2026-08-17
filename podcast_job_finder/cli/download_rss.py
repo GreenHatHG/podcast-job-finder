@@ -6,8 +6,10 @@ import sys
 from pathlib import Path
 from typing import Final, Sequence
 
+from podcast_job_finder.errors import ConfigurationError
 from podcast_job_finder.logging import configure_logging
 from podcast_job_finder.output_paths import EPISODE_OUTPUT_DIR, FEED_OUTPUT_DIR
+from podcast_job_finder.podcast_catalog import resolve_feed_reference
 from podcast_job_finder.rss.download import download_rss_feed
 from podcast_job_finder.rss.feed import RssFeedError
 
@@ -22,8 +24,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     results: list[dict[str, object]] = []
     has_failure = False
 
-    for feed_url in args.feed_urls:
+    for feed_reference in args.feed_references:
+        feed_url = feed_reference
         try:
+            feed_url = resolve_feed_reference(feed_reference)
             result = download_rss_feed(
                 feed_url,
                 output_dir=args.output_dir,
@@ -31,7 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 list_only=args.list_only,
             )
-        except RssFeedError as error:
+        except (ConfigurationError, RssFeedError) as error:
             has_failure = True
             results.append({"feed_url": feed_url, "error": str(error)})
             print(str(error), file=sys.stderr)
@@ -47,7 +51,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROGRAM_NAME)
-    parser.add_argument("feed_urls", nargs="+")
+    parser.add_argument(
+        "feed_references",
+        nargs="+",
+        metavar="播客名或RSS地址",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,

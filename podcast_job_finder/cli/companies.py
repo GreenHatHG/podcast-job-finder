@@ -43,6 +43,7 @@ from podcast_job_finder.companies.runtime import (
     load_page_extraction_runtime_from_env,
 )
 from podcast_job_finder.logging import configure_logging
+from podcast_job_finder.podcast_catalog import get_podcast_feed_url
 from podcast_job_finder.rss.feed import RssFeed, fetch_rss_feed
 from podcast_job_finder.episode import build_episode_url
 from podcast_job_finder.errors import PodcastJobFinderError
@@ -57,7 +58,7 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
     [
         f"用法：{PROGRAM_NAME} <episode_url>",
         (
-            f"      {PROGRAM_NAME} --feed-url <RSS地址> "
+            f"      {PROGRAM_NAME} (--podcast <播客名> | --feed-url <RSS地址>) "
             "[--max-episodes <正整数>] [--source page|audio] "
             "[--transcribe-only|--extract-only] "
             "[--audio-processing-mode sequential|download-first] [--resume]"
@@ -115,10 +116,11 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
         raise CliUsageError(EXTRACT_ONLY_SOURCE_ERROR)
     if parsed_args.resume and parsed_args.source != AUDIO_SOURCE:
         raise CliUsageError(RESUME_SOURCE_ERROR)
-    if not parsed_args.feed_url:
-        raise CliUsageError(COMMAND_USAGE_TEXT)
-
-    feed_url = parsed_args.feed_url.strip()
+    feed_url = (
+        get_podcast_feed_url(parsed_args.podcast)
+        if parsed_args.podcast is not None
+        else parsed_args.feed_url.strip()
+    )
     logger.info("从 RSS 获取播客节目列表：feed=%s", feed_url)
     feed = fetch_rss_feed(feed_url)
     episodes = feed.episodes
@@ -158,7 +160,9 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
 
 def _build_feed_parser() -> argparse.ArgumentParser:
     parser = _CliArgumentParser(add_help=True, prog=PROGRAM_NAME)
-    parser.add_argument("--feed-url", required=True)
+    feed_input = parser.add_mutually_exclusive_group(required=True)
+    feed_input.add_argument("--podcast")
+    feed_input.add_argument("--feed-url")
     parser.add_argument("--max-episodes", type=_parse_positive_int)
     parser.add_argument(
         "--source",
