@@ -13,6 +13,7 @@ from podcast_job_finder.audio.segmentation.speech_pipeline import (
 from podcast_job_finder.audio.segmentation.vad import VadConfig
 from podcast_job_finder.transcription.diagnostics import (
     TranscriptionDiagnostics,
+    parse_transcription_diagnostics,
 )
 from podcast_job_finder.errors import EpisodeProcessingError
 
@@ -131,6 +132,31 @@ class TranscribedSpeechSegment:
         if self.diagnostics is not None:
             payload["diagnostics"] = self.diagnostics.to_dict()
         return payload
+
+
+def build_transcribed_speech_segment_from_payload(
+    *,
+    payload: Mapping[str, object],
+    index: int,
+    start_ms: int,
+    end_ms: int,
+    text: str,
+) -> TranscribedSpeechSegment:
+    return TranscribedSpeechSegment(
+        index=index,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        text=text,
+        character_timestamps=parse_timed_transcription_texts(
+            payload.get("character_timestamps"),
+            field_name="character_timestamps",
+        ),
+        sentences=parse_timed_transcription_texts(
+            payload.get("sentences"),
+            field_name="sentences",
+        ),
+        diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
+    )
 
 
 @dataclass(slots=True, frozen=True)

@@ -17,6 +17,19 @@ RESULT_STATUS_ERROR: Final = "error"
 EPISODE_RESULT_INCOMPLETE_ERROR: Final = "节目流水线未生成完整结果。"
 
 
+def _build_company_episode_payload(
+    episode_result: EpisodeResult,
+    transcription_result: SuccessfulEpisodeTranscriptionResult | None,
+    *,
+    status: Literal["success", "error"],
+) -> dict[str, object]:
+    if transcription_result is None:
+        return EpisodeResult.to_dict(episode_result)
+    payload = transcription_result.to_dict()
+    payload["status"] = status
+    return payload
+
+
 @dataclass(slots=True, frozen=True)
 class BatchEpisodePipelineResult:
     episode_results: list[EpisodeResult]
@@ -37,11 +50,11 @@ class SuccessfulCompanyEpisodeResult(EpisodeResult):
     )
 
     def to_dict(self) -> dict[str, object]:
-        if self.transcription_result is None:
-            payload = EpisodeResult.to_dict(self)
-        else:
-            payload = self.transcription_result.to_dict()
-            payload["status"] = self.status
+        payload = _build_company_episode_payload(
+            self,
+            self.transcription_result,
+            status=self.status,
+        )
         payload.update(
             {
                 "companies": [
@@ -66,11 +79,11 @@ class FailedCompanyEpisodeResult(EpisodeResult):
     status: Literal["error"] = field(init=False, default=RESULT_STATUS_ERROR)
 
     def to_dict(self) -> dict[str, object]:
-        if self.transcription_result is None:
-            payload = EpisodeResult.to_dict(self)
-        else:
-            payload = self.transcription_result.to_dict()
-            payload["status"] = self.status
+        payload = _build_company_episode_payload(
+            self,
+            self.transcription_result,
+            status=self.status,
+        )
         payload["error"] = self.error
         return payload
 

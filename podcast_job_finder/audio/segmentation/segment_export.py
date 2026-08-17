@@ -83,6 +83,20 @@ class ExportedSpeechSegment:
         }
 
 
+def to_source_audio_timestamp(
+    timestamp_ms: int,
+    *,
+    segment: ExportedSpeechSegment,
+    silence_padding_ms: int,
+) -> int:
+    """把导出片段内的时间换算为原始音频中的时间。"""
+    relative_ms = max(0, timestamp_ms - silence_padding_ms)
+    return min(
+        segment.segment.end_ms,
+        segment.segment.start_ms + relative_ms,
+    )
+
+
 def _export_speech_segments(  # pylint: disable=too-many-arguments
     audio: NormalizedAudio,
     segments: Sequence[SpeechSegment],

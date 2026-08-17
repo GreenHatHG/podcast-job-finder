@@ -34,11 +34,13 @@ from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.companies.pipeline import (
     run_batch_episode_pipeline,
 )
+from podcast_job_finder.companies.pipeline_results import BatchEpisodePipelineResult
 from podcast_job_finder.companies.rate_limit import (
     load_episode_page_fetch_rate_from_env,
 )
 from podcast_job_finder.companies.reporting import FeedReportData, save_feed_reports
 from podcast_job_finder.companies.runtime import (
+    EpisodeExtractionRuntime,
     load_audio_extraction_runtime_from_env,
     load_page_extraction_runtime_from_env,
 )
@@ -198,17 +200,11 @@ def _run_feed_page_mode(feed: RssFeed, work_items: Sequence[EpisodeWorkItem]) ->
         checkpoint_store=LlmCheckpointStore(),
         page_fetch_rate_per_minute=load_episode_page_fetch_rate_from_env(),
     )
-    output_path, summary_path = save_feed_reports(
-        FeedReportData(
-            feed_id=feed.feed_id,
-            podcast_title=feed.title,
-            model=extraction_runtime.llm.model,
-            base_url=extraction_runtime.llm.base_url,
-            total=len(work_items),
-            success=pipeline_result.success_count,
-            failed=pipeline_result.fail_count,
-            episodes=pipeline_result.episode_results,
-        )
+    output_path, summary_path = _save_company_extraction_reports(
+        feed,
+        runtime=extraction_runtime,
+        total=len(work_items),
+        pipeline_result=pipeline_result,
     )
     logger.info("结果已保存到 %s", output_path)
     logger.info("公司汇总已保存到 %s", summary_path)
@@ -284,21 +280,36 @@ def _run_audio_company_extraction(
         runtime=extraction_runtime,
         resume=resume,
     )
-    output_path, summary_path = save_feed_reports(
-        FeedReportData(
-            feed_id=feed.feed_id,
-            podcast_title=feed.title,
-            model=extraction_runtime.llm.model,
-            base_url=extraction_runtime.llm.base_url,
-            total=len(transcription_result.episode_results),
-            success=extraction_result.success_count,
-            failed=extraction_result.fail_count,
-            episodes=extraction_result.episode_results,
-        )
+    output_path, summary_path = _save_company_extraction_reports(
+        feed,
+        runtime=extraction_runtime,
+        total=len(transcription_result.episode_results),
+        pipeline_result=extraction_result,
     )
     logger.info("音频公司提取结果已保存到 %s", output_path)
     logger.info("音频公司汇总已保存到 %s", summary_path)
     return 1 if extraction_result.fail_count > 0 else 0
+
+
+def _save_company_extraction_reports(
+    feed: RssFeed,
+    *,
+    runtime: EpisodeExtractionRuntime,
+    total: int,
+    pipeline_result: BatchEpisodePipelineResult,
+) -> tuple[str, str]:
+    return save_feed_reports(
+        FeedReportData(
+            feed_id=feed.feed_id,
+            podcast_title=feed.title,
+            model=runtime.llm.model,
+            base_url=runtime.llm.base_url,
+            total=total,
+            success=pipeline_result.success_count,
+            failed=pipeline_result.fail_count,
+            episodes=pipeline_result.episode_results,
+        )
+    )
 
 
 def _run_single_episode_mode(episode_url: str) -> int:

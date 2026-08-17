@@ -11,12 +11,9 @@ from typing import Mapping
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
 from podcast_job_finder.timestamps import build_utc_timestamp
-from podcast_job_finder.transcription.diagnostics import (
-    parse_transcription_diagnostics,
-)
 from podcast_job_finder.transcription.models import (
     TranscribedSpeechSegment,
-    parse_timed_transcription_texts,
+    build_transcribed_speech_segment_from_payload,
 )
 
 
@@ -97,20 +94,12 @@ def _validate_checkpoint_payload(
     if not isinstance(text, str):
         raise ValueError("音频片段检查点中的 text 必须是字符串。")
     # 完整恢复文字和时间信息，缓存片段才能继续作为下一段的参考。
-    return TranscribedSpeechSegment(
+    return build_transcribed_speech_segment_from_payload(
+        payload=payload,
         index=_require_integer(payload, "index"),
         start_ms=_require_integer(payload, "start_ms"),
         end_ms=_require_integer(payload, "end_ms"),
         text=text,
-        character_timestamps=parse_timed_transcription_texts(
-            payload.get("character_timestamps"),
-            field_name="character_timestamps",
-        ),
-        sentences=parse_timed_transcription_texts(
-            payload.get("sentences"),
-            field_name="sentences",
-        ),
-        diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
     )
 
 

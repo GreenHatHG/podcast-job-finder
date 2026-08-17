@@ -9,10 +9,7 @@ from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechS
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionResult,
     TranscribedSpeechSegment,
-    parse_timed_transcription_texts,
-)
-from podcast_job_finder.transcription.diagnostics import (
-    parse_transcription_diagnostics,
+    build_transcribed_speech_segment_from_payload,
 )
 from podcast_job_finder.filesystem import DEFAULT_FILE_CREATION_MODE, atomic_write_json
 from podcast_job_finder.errors import EpisodeProcessingError
@@ -165,20 +162,12 @@ def parse_transcribed_segment(
     )
     assert isinstance(payload, dict)
     try:
-        return TranscribedSpeechSegment(
+        return build_transcribed_speech_segment_from_payload(
+            payload=payload,
             index=segment_index,
             start_ms=start_ms,
             end_ms=end_ms,
             text=text,
-            character_timestamps=parse_timed_transcription_texts(
-                payload.get("character_timestamps"),
-                field_name="character_timestamps",
-            ),
-            sentences=parse_timed_transcription_texts(
-                payload.get("sentences"),
-                field_name="sentences",
-            ),
-            diagnostics=parse_transcription_diagnostics(payload.get("diagnostics")),
         )
     except ValueError as error:
         raise _build_invalid_segment_error(path, index) from error

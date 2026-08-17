@@ -126,15 +126,7 @@ def prepare_episode_audio(
             },
         ):
             logger.info("命中完整音频转写清单：eid=%s", context.eid)
-            return SuccessfulEpisodeTranscriptionResult(
-                episode=replace(context.work_item, eid=context.eid),
-                cached=True,
-                episode_output_dir=str(context.episode_dir),
-                transcription_path=str(context.transcription_path),
-                article_path=str(context.article_path),
-                transcription_quality_report_path=str(context.quality_report_path),
-                segment_directory=str(context.segment_dir),
-            )
+            return _build_successful_episode_result(context, cached=True)
 
         logger.info("下载节目音频：eid=%s title=%s", context.eid, work_item.title)
         source_url = work_item.audio_url
@@ -205,14 +197,9 @@ def transcribe_prepared_episode(
             result=transcription_result,
             exported_segments=exported_segments,
         )
-        return SuccessfulEpisodeTranscriptionResult(
-            episode=replace(context.work_item, eid=context.eid),
+        return _build_successful_episode_result(
+            context,
             cached=all_segments_cached,
-            episode_output_dir=str(context.episode_dir),
-            transcription_path=str(context.transcription_path),
-            article_path=str(context.article_path),
-            transcription_quality_report_path=str(context.quality_report_path),
-            segment_directory=str(context.segment_dir),
         )
     except EpisodeProcessingError as error:
         logger.info("节目音频转写失败：%s", error)
@@ -220,6 +207,22 @@ def transcribe_prepared_episode(
             episode=context.work_item,
             error=str(error),
         )
+
+
+def _build_successful_episode_result(
+    context: _EpisodeTranscriptionContext,
+    *,
+    cached: bool,
+) -> SuccessfulEpisodeTranscriptionResult:
+    return SuccessfulEpisodeTranscriptionResult(
+        episode=replace(context.work_item, eid=context.eid),
+        cached=cached,
+        episode_output_dir=str(context.episode_dir),
+        transcription_path=str(context.transcription_path),
+        article_path=str(context.article_path),
+        transcription_quality_report_path=str(context.quality_report_path),
+        segment_directory=str(context.segment_dir),
+    )
 
 
 def _build_segment_checkpoint_store(

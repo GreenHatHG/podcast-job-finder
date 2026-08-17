@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.segmentation.segment_export import (
+    ExportedSpeechSegment,
+    to_source_audio_timestamp,
+)
 from podcast_job_finder.errors import ConfigurationError
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     DEFAULT_SILENCE_PADDING_MS,
@@ -222,12 +225,12 @@ class FireRedAudioTranscriber:
             or not isinstance(end_ms, int)
         ):
             return None
-        absolute_start = _to_source_timestamp(
+        absolute_start = to_source_audio_timestamp(
             start_ms,
             segment=segment,
             silence_padding_ms=self._silence_padding_ms,
         )
-        absolute_end = _to_source_timestamp(
+        absolute_end = to_source_audio_timestamp(
             end_ms,
             segment=segment,
             silence_padding_ms=self._silence_padding_ms,
@@ -239,19 +242,6 @@ class FireRedAudioTranscriber:
             start_ms=absolute_start,
             end_ms=absolute_end,
         )
-
-
-def _to_source_timestamp(
-    timestamp_ms: int,
-    *,
-    segment: ExportedSpeechSegment,
-    silence_padding_ms: int,
-) -> int:
-    relative_timestamp = max(0, timestamp_ms - silence_padding_ms)
-    return min(
-        segment.segment.end_ms,
-        segment.segment.start_ms + relative_timestamp,
-    )
 
 
 def _require_file(path: Path, field_name: str) -> None:

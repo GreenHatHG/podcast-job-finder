@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Final
 
-from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
+from podcast_job_finder.audio.segmentation.segment_export import (
+    ExportedSpeechSegment,
+    to_source_audio_timestamp,
+)
 from podcast_job_finder.transcription.models import (
     AudioTranscriptionError,
     CharacterAlignment,
@@ -164,30 +167,17 @@ def _to_absolute_alignment(
         text=alignment.text,
         source_start=alignment.source_start,
         source_end=alignment.source_end,
-        start_ms=_to_source_timestamp(
+        start_ms=to_source_audio_timestamp(
             alignment.start_ms,
             segment=segment,
             silence_padding_ms=silence_padding_ms,
         ),
-        end_ms=_to_source_timestamp(
+        end_ms=to_source_audio_timestamp(
             alignment.end_ms,
             segment=segment,
             silence_padding_ms=silence_padding_ms,
         ),
         confidence=alignment.confidence,
-    )
-
-
-def _to_source_timestamp(
-    timestamp_ms: int,
-    *,
-    segment: ExportedSpeechSegment,
-    silence_padding_ms: int,
-) -> int:
-    relative_ms = max(0, timestamp_ms - silence_padding_ms)
-    return min(
-        segment.segment.end_ms,
-        segment.segment.start_ms + relative_ms,
     )
 
 
