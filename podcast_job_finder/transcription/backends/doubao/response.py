@@ -48,7 +48,9 @@ def build_doubao_response_summary(
 ) -> DoubaoResponseSummary:
     response_list = list(responses)
     final_responses = [
-        response for response in response_list if response.type == final_response_type
+        response
+        for response in response_list
+        if _is_final_response(response, final_response_type)
     ]
     text = final_responses[-1].text.strip() if final_responses else ""
     return DoubaoResponseSummary(
@@ -68,12 +70,46 @@ def build_doubao_response_summary(
         # 是否曾经返回过文字，但这些文字不是正式的 FINAL_RESULT
         # 没有返回正式最终结果，可能存在文字未完成，不能当成正常空转写
         has_non_final_text=any(
-            response.type != final_response_type and response.text.strip()
+            not _is_final_response(response, final_response_type)
+            and response.text.strip()
             for response in response_list
         ),
         has_error_response=any(
             response.type == error_response_type for response in response_list
         ),
+    )
+
+
+def _is_final_response(
+    response: AsrResponseProtocol,
+    final_response_type: object,
+) -> bool:
+    """识别正式最终响应，包括底层客户端误标的空结果。"""
+
+    if response.type == final_response_type:
+        return True
+    raw_json = response.raw_json
+    if raw_json is None:
+        return False
+    results = raw_json.get("results")
+    if not isinstance(results, list):
+        return False
+    return any(
+        _raw_result_is_final(result) for result in results if isinstance(result, dict)
+    )
+
+
+def _raw_result_is_final(result: dict[object, object]) -> bool:
+    extra = result.get("extra")
+    has_nonstream_result = (
+        isinstance(extra, dict) and extra.get("nonstream_result") is True
+    )
+    offline_result = result.get("is_offline_result")
+    return (
+        has_nonstream_result
+        or offline_result is True
+        or offline_result == 1
+        or (result.get("is_interim") is False and result.get("is_vad_finished") is True)
     )
 
 
