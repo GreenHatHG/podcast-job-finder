@@ -15,6 +15,11 @@ from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
 DOWNLOAD_CHUNK_SIZE_BYTES: Final = 1024 * 1024
 DOWNLOAD_CONNECT_TIMEOUT_SECONDS: Final = 10
 DOWNLOAD_READ_TIMEOUT_SECONDS: Final = 60
+DOWNLOAD_MAX_ATTEMPTS: Final = 3
+DOWNLOAD_RETRY_BASE_DELAY_SECONDS: Final = 2.0
+DOWNLOAD_RETRY_MAX_DELAY_SECONDS: Final = 4.0
+RETRYABLE_TOO_MANY_REQUESTS_STATUS: Final = 429
+RETRYABLE_SERVER_ERROR_STATUS_MIN: Final = 500
 USER_AGENT_HEADER_NAME: Final = "User-Agent"
 INVALID_AUDIO_CONTENT_TYPE_ERROR_TEMPLATE: Final = (
     "下载响应的 Content-Type 不是音频：{url}，Content-Type={content_type}"
@@ -111,7 +116,11 @@ def download_audio_content(
     partial_file: BinaryIO,
 ) -> int:
     try:
-        return _write_response_to_file(source_url, partial_path, partial_file)
+        return _download_audio_content_with_retry(
+            source_url,
+            partial_path,
+            partial_file,
+        )
     except requests.RequestException as error:
         raise EpisodeAudioDownloadError(
             REQUEST_AUDIO_ERROR_TEMPLATE.format(
@@ -126,6 +135,67 @@ def download_audio_content(
                 error_message=str(error),
             )
         ) from error
+
+
+def _download_audio_content_with_retry(
+    source_url: str,
+    partial_path: Path,
+    partial_file: BinaryIO,
+) -> int:
+    for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            _reset_partial_file(partial_file)
+            return _write_response_to_file(source_url, partial_path, partial_file)
+        except requests.RequestException as error:
+            if attempt == DOWNLOAD_MAX_ATTEMPTS or not _is_retryable_request_error(
+                error
+            ):
+                raise
+            _wait_before_download_retry(source_url, attempt, error)
+    raise AssertionError("节目音频下载重试循环未返回结果。")
+
+
+def _reset_partial_file(partial_file: BinaryIO) -> None:
+    partial_file.seek(0)
+    partial_file.truncate(0)
+
+
+def _is_retryable_request_error(error: requests.RequestException) -> bool:
+    if isinstance(
+        error,
+        (
+            requests.Timeout,
+            requests.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    ):
+        return True
+    if not isinstance(error, requests.HTTPError) or error.response is None:
+        return False
+    status_code = error.response.status_code
+    return (
+        status_code == RETRYABLE_TOO_MANY_REQUESTS_STATUS
+        or status_code >= RETRYABLE_SERVER_ERROR_STATUS_MIN
+    )
+
+
+def _wait_before_download_retry(
+    source_url: str,
+    attempt: int,
+    error: requests.RequestException,
+) -> None:
+    delay_seconds = min(
+        DOWNLOAD_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+        DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
+    )
+    logger.warning(
+        "节目音频下载第 %d 次尝试失败，将在 %.2f 秒后重试：url=%s error=%s",
+        attempt,
+        delay_seconds,
+        source_url,
+        error,
+    )
+    time.sleep(delay_seconds)
 
 
 def _write_response_to_file(
