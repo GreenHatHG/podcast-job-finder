@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from podcast_job_finder.episode.models import EpisodeWorkItem
+from podcast_job_finder.audio.episode_audio.files import (
+    delete_episode_audio_directory,
+)
 from podcast_job_finder.transcription.schedule import (
     DEFAULT_AUDIO_PROCESSING_MODE,
     AudioProcessingMode,
@@ -32,9 +35,19 @@ from podcast_job_finder.transcription.pipeline_results import (
     SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
+from podcast_job_finder.transcription.completed_transcription import (
+    can_restore_completed_transcription,
+)
+from podcast_job_finder.transcription.formatting.article import (
+    TRANSCRIPTION_ARTICLE_FILE_NAME,
+)
+from podcast_job_finder.transcription.quality_report import (
+    TRANSCRIPTION_QUALITY_REPORT_FILE_NAME,
+)
 from podcast_job_finder.errors import PodcastJobFinderError
 from podcast_job_finder.output_paths import (
     EPISODE_OUTPUT_DIR,
+    EPISODE_AUDIO_DIR_NAME,
     EPISODE_TRANSCRIPTION_DIR_NAME,
     TRANSCRIPTION_REPORT_DIR_NAME,
     find_episode_output_dir,
@@ -155,6 +168,78 @@ def load_existing_batch_transcription_result(
         ),
         skipped_count,
     )
+
+
+def delete_completed_episode_audio_files(
+    work_items: Sequence[EpisodeWorkItem],
+    *,
+    audio_output_dir: Path = EPISODE_OUTPUT_DIR,
+) -> int:
+    """删除已完成转写的节目音频目录，保留转写文本和其他结果。"""
+
+    deleted_count = 0
+    logger.info(
+        "开始删除已完成转写节目的音频文件：episodes=%d",
+        len(work_items),
+    )
+    for work_item in work_items:
+        if _delete_completed_episode_audio(
+            work_item,
+            audio_output_dir=audio_output_dir,
+        ):
+            deleted_count += 1
+    logger.info(
+        "已完成转写节目的音频文件删除结束：deleted=%d",
+        deleted_count,
+    )
+    return deleted_count
+
+
+def _delete_completed_episode_audio(
+    work_item: EpisodeWorkItem,
+    *,
+    audio_output_dir: Path,
+) -> bool:
+    eid = work_item.resolve_episode_id()
+    if eid is None:
+        logger.debug(
+            "跳过删除节目音频：原因=无法解析节目 ID title=%s episode_url=%s",
+            work_item.title,
+            work_item.episode_url,
+        )
+        return False
+    episode_output_dir = find_episode_output_dir(
+        audio_output_dir,
+        eid,
+        podcast_title=work_item.podcast_title,
+        episode_title=work_item.title,
+    )
+    transcription_path = (
+        episode_output_dir / EPISODE_TRANSCRIPTION_DIR_NAME / TRANSCRIPTION_FILE_NAME
+    )
+    if not can_restore_completed_transcription(
+        transcription_path=transcription_path,
+        article_path=transcription_path.with_name(TRANSCRIPTION_ARTICLE_FILE_NAME),
+        quality_report_path=transcription_path.with_name(
+            TRANSCRIPTION_QUALITY_REPORT_FILE_NAME
+        ),
+        article_title=work_item.title or eid,
+        expected_metadata={
+            "eid": eid,
+            "episode_url": work_item.episode_url,
+        },
+    ):
+        logger.debug(
+            "跳过删除节目音频：原因=转写未完成或无法复用 episode_id=%s title=%s",
+            eid,
+            work_item.title,
+        )
+        return False
+    audio_dir = episode_output_dir / EPISODE_AUDIO_DIR_NAME
+    deleted = delete_episode_audio_directory(audio_dir)
+    if deleted:
+        logger.info("已删除节目音频：eid=%s path=%s", eid, audio_dir)
+    return deleted
 
 
 def save_batch_audio_transcription_report(

@@ -3,13 +3,17 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import shutil
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Final, Iterator
 
-from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
+from podcast_job_finder.audio.episode_audio.errors import (
+    EpisodeAudioCleanupError,
+    EpisodeAudioDownloadError,
+)
 from podcast_job_finder.audio.episode_audio.http import download_audio_content
 from podcast_job_finder.output_paths import (
     build_episode_audio_dir,
@@ -44,6 +48,12 @@ EPISODE_DIR_REDIRECT_ERROR_TEMPLATE: Final = (
 )
 PREPARE_OUTPUT_DIR_ERROR_TEMPLATE: Final = (
     "创建或解析节目音频输出目录失败：{path}，{error_message}"
+)
+EPISODE_AUDIO_PATH_NOT_DIRECTORY_ERROR: Final = (
+    "节目音频路径不是目录，已拒绝删除：{path}"
+)
+DELETE_EPISODE_AUDIO_DIR_ERROR_TEMPLATE: Final = (
+    "删除节目音频目录失败：{path}，{error_message}"
 )
 OPEN_DOWNLOAD_LOCK_ERROR_TEMPLATE: Final = (
     "打开节目音频锁文件失败：{path}，{error_message}"
@@ -180,6 +190,38 @@ def store_episode_audio(
             target_path,
             overwrite=overwrite,
         )
+
+
+def delete_episode_audio_directory(audio_dir: Path) -> bool:
+    """删除一个节目的 audio 目录。目录不存在时返回 False。"""
+
+    try:
+        if audio_dir.is_symlink():
+            raise EpisodeAudioCleanupError(
+                EPISODE_DIR_SYMLINK_ERROR.format(path=audio_dir)
+            )
+        if not audio_dir.exists():
+            return False
+        if not audio_dir.is_dir():
+            raise EpisodeAudioCleanupError(
+                EPISODE_AUDIO_PATH_NOT_DIRECTORY_ERROR.format(path=audio_dir)
+            )
+        if audio_dir.resolve() != audio_dir:
+            raise EpisodeAudioCleanupError(
+                EPISODE_DIR_REDIRECT_ERROR_TEMPLATE.format(
+                    expected_path=audio_dir,
+                    actual_path=audio_dir.resolve(),
+                )
+            )
+        shutil.rmtree(audio_dir)
+    except OSError as error:
+        raise EpisodeAudioCleanupError(
+            DELETE_EPISODE_AUDIO_DIR_ERROR_TEMPLATE.format(
+                path=audio_dir,
+                error_message=str(error),
+            )
+        ) from error
+    return True
 
 
 @contextmanager

@@ -7,6 +7,7 @@ import sys
 from typing import Final, NoReturn, Sequence
 
 from podcast_job_finder.transcription.batch import (
+    delete_completed_episode_audio_files,
     load_existing_batch_transcription_result,
     run_batch_audio_transcription,
     save_batch_audio_transcription_report,
@@ -64,6 +65,7 @@ COMMAND_USAGE_TEXT: Final = "\n".join(
             "[--max-episodes <正整数>] [--source page|audio] "
             "[--transcribe-only|--extract-only] "
             "[--audio-processing-mode sequential|download-first] [--resume]"
+            " [--delete-audio]"
         ),
     ]
 )
@@ -73,6 +75,7 @@ TRANSCRIBE_ONLY_SOURCE_ERROR: Final = (
 EXTRACT_ONLY_SOURCE_ERROR: Final = "--extract-only 只能与 --source audio 一起使用。"
 EXCLUSIVE_AUDIO_MODE_ERROR: Final = "--transcribe-only 和 --extract-only 不能同时使用。"
 RESUME_SOURCE_ERROR: Final = "--resume 只能与 --source audio 一起使用。"
+DELETE_AUDIO_SOURCE_ERROR: Final = "--delete-audio 只能与 --source audio 一起使用。"
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,8 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
         raise CliUsageError(EXTRACT_ONLY_SOURCE_ERROR)
     if parsed_args.resume and parsed_args.source != AUDIO_SOURCE:
         raise CliUsageError(RESUME_SOURCE_ERROR)
+    if parsed_args.delete_audio and parsed_args.source != AUDIO_SOURCE:
+        raise CliUsageError(DELETE_AUDIO_SOURCE_ERROR)
     feed_url = (
         get_podcast_feed_url(parsed_args.podcast)
         if parsed_args.podcast is not None
@@ -145,18 +150,22 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
 
     if parsed_args.source == AUDIO_SOURCE:
         if parsed_args.extract_only:
-            return _run_feed_audio_extraction_only(
+            exit_code = _run_feed_audio_extraction_only(
                 feed,
                 work_items,
                 resume=parsed_args.resume,
             )
-        return _run_feed_audio_mode(
-            feed,
-            work_items,
-            transcribe_only=parsed_args.transcribe_only,
-            processing_mode=parsed_args.audio_processing_mode,
-            resume=parsed_args.resume,
-        )
+        else:
+            exit_code = _run_feed_audio_mode(
+                feed,
+                work_items,
+                transcribe_only=parsed_args.transcribe_only,
+                processing_mode=parsed_args.audio_processing_mode,
+                resume=parsed_args.resume,
+            )
+        if parsed_args.delete_audio:
+            delete_completed_episode_audio_files(work_items)
+        return exit_code
     return _run_feed_page_mode(feed, work_items)
 
 
@@ -179,6 +188,7 @@ def _build_feed_parser() -> argparse.ArgumentParser:
         default=DEFAULT_AUDIO_PROCESSING_MODE,
     )
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--delete-audio", action="store_true")
     return parser
 
 
