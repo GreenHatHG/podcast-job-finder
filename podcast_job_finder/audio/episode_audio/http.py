@@ -22,6 +22,13 @@ DOWNLOAD_READ_TIMEOUT_SECONDS: Final = 60
 DOWNLOAD_MAX_ATTEMPTS: Final = 3
 DOWNLOAD_RETRY_BASE_DELAY_SECONDS: Final = 2.0
 DOWNLOAD_RETRY_MAX_DELAY_SECONDS: Final = 4.0
+RETRYABLE_OS_CONNECTION_ERRORS: Final = (
+    ConnectionResetError,
+    ConnectionAbortedError,
+    ConnectionRefusedError,
+    BrokenPipeError,
+    TimeoutError,
+)
 DEFAULT_DOWNLOAD_CONNECTIONS: Final = 4
 MAX_DOWNLOAD_CONNECTIONS: Final = 16
 DOWNLOAD_CONNECTIONS_ENV: Final = "EPISODE_AUDIO_DOWNLOAD_CONNECTIONS"
@@ -166,7 +173,21 @@ def download_audio_content(
                 error_message=str(error),
             )
         ) from error
+    except BaseExceptionGroup as error:
+        raise EpisodeAudioDownloadError(
+            REQUEST_AUDIO_ERROR_TEMPLATE.format(
+                url=source_url,
+                error_message=_format_download_error_message(error),
+            )
+        ) from error
     except OSError as error:
+        if isinstance(error, RETRYABLE_OS_CONNECTION_ERRORS):
+            raise EpisodeAudioDownloadError(
+                REQUEST_AUDIO_ERROR_TEMPLATE.format(
+                    url=source_url,
+                    error_message=str(error),
+                )
+            ) from error
         raise EpisodeAudioDownloadError(
             WRITE_AUDIO_ERROR_TEMPLATE.format(
                 path=partial_path,
@@ -190,8 +211,8 @@ def _download_audio_content_with_retry(
                 partial_file,
                 connections,
             )
-        except requests.RequestException as error:
-            if attempt == DOWNLOAD_MAX_ATTEMPTS or not _is_retryable_request_error(
+        except (OSError, BaseExceptionGroup) as error:
+            if attempt == DOWNLOAD_MAX_ATTEMPTS or not _is_retryable_download_error(
                 error
             ):
                 raise
@@ -270,6 +291,16 @@ def _download_audio_content_once(
     )
 
 
+def _is_retryable_download_error(error: BaseException) -> bool:
+    if isinstance(error, BaseExceptionGroup):
+        return bool(error.exceptions) and all(
+            _is_retryable_download_error(inner) for inner in error.exceptions
+        )
+    if isinstance(error, requests.RequestException):
+        return _is_retryable_request_error(error)
+    return isinstance(error, RETRYABLE_OS_CONNECTION_ERRORS)
+
+
 def _is_retryable_request_error(error: requests.RequestException) -> bool:
     if isinstance(
         error,
@@ -292,7 +323,7 @@ def _is_retryable_request_error(error: requests.RequestException) -> bool:
 def _wait_before_download_retry(
     source_url: str,
     attempt: int,
-    error: requests.RequestException,
+    error: BaseException,
 ) -> None:
     delay_seconds = min(
         DOWNLOAD_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
@@ -303,9 +334,15 @@ def _wait_before_download_retry(
         attempt,
         delay_seconds,
         source_url,
-        error,
+        _format_download_error_message(error),
     )
     time.sleep(delay_seconds)
+
+
+def _format_download_error_message(error: BaseException) -> str:
+    if isinstance(error, BaseExceptionGroup) and error.exceptions:
+        return _format_download_error_message(error.exceptions[0])
+    return str(error)
 
 
 def _download_with_optional_ranges(
@@ -438,19 +475,18 @@ def _download_ranges_parallel(
 
 def _wait_for_range_futures(futures: list[Future[None]]) -> None:
     fallback = False
-    first_error: BaseException | None = None
+    errors: list[Exception] = []
     for future in as_completed(futures):
         try:
             future.result()
         except _SequentialDownloadRequired:
             fallback = True
         except Exception as error:  # pylint: disable=broad-exception-caught
-            if first_error is None:
-                first_error = error
-            else:
-                logger.exception("节目音频分段下载还有其他失败：error=%s", error)
-    if first_error is not None:
-        raise first_error
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise ExceptionGroup("节目音频分段下载失败", errors)
     if fallback:
         raise _SequentialDownloadRequired
 
