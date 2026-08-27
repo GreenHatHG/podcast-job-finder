@@ -70,7 +70,6 @@ class SegmentTranscriptionCheckpointStore:
             "index": exported_segment.index,
             "start_ms": exported_segment.segment.start_ms,
             "end_ms": exported_segment.segment.end_ms,
-            "audio_path": str(exported_segment.file_path),
         }
         return expected_values
 

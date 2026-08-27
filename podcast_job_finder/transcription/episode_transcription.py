@@ -118,7 +118,6 @@ def prepare_episode_audio(
             transcription_path=context.transcription_path,
             article_path=context.article_path,
             quality_report_path=context.quality_report_path,
-            segment_dir=context.segment_dir,
             article_title=context.work_item.title or context.eid,
             expected_metadata={
                 "eid": context.eid,

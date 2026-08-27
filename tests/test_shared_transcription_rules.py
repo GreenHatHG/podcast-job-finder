@@ -17,6 +17,12 @@ from podcast_job_finder.episode.models import EpisodeWorkItem
 from podcast_job_finder.transcription.checkpoint_store import (
     SegmentTranscriptionCheckpointStore,
 )
+from podcast_job_finder.transcription.completed_transcription import (
+    can_restore_completed_transcription,
+)
+from podcast_job_finder.transcription.formatting.article import (
+    build_transcription_article,
+)
 from podcast_job_finder.transcription.manifest import (
     TranscriptionManifestError,
     parse_transcribed_segment,
@@ -188,3 +194,143 @@ class SharedTranscriptionRulesTest(TestCase):
                 "filtered_count": 0,
             },
         )
+
+    def test_checkpoint_loader_accepts_different_audio_path(self) -> None:
+        exported_segment = ExportedSpeechSegment(
+            index=1,
+            segment=SpeechSegment(start_sample=16_000, end_sample=48_000),
+            file_path=Path("/vps/segment.wav"),
+        )
+        payload = {
+            "eid": "abc",
+            "episode_url": "https://example.com/episode",
+            "index": 1,
+            "start_ms": 1_000,
+            "end_ms": 3_000,
+            "audio_path": "/Users/old/segment.wav",
+            "text": "测试。",
+        }
+        checkpoint_store = SegmentTranscriptionCheckpointStore(
+            metadata={"eid": "abc"},
+            expected_metadata={
+                "eid": "abc",
+                "episode_url": "https://example.com/episode",
+            },
+        )
+        with TemporaryDirectory() as temporary_dir:
+            checkpoint_path = Path(temporary_dir) / "segment.json"
+            checkpoint_path.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            restored_segment = checkpoint_store.load(
+                checkpoint_path,
+                exported_segment=exported_segment,
+            )
+
+        assert restored_segment is not None
+        self.assertEqual(restored_segment.text, "测试。")
+        self.assertEqual(restored_segment.start_ms, 1_000)
+
+
+class CompletedTranscriptionResumeTest(TestCase):
+    def test_restore_succeeds_without_local_audio_files(self) -> None:
+        title = "节目标题"
+        body = "你好"
+        with TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            transcription_path = output_dir / "transcription.json"
+            article_path = output_dir / "transcription.md"
+            quality_report_path = output_dir / "transcription_quality_report.json"
+            transcription_path.write_text(
+                json.dumps(
+                    {
+                        "eid": "abc",
+                        "episode_url": "https://example.com/episode",
+                        "title": title,
+                        "audio_path": "/Users/old/source.m4a",
+                        "segment_count": 1,
+                        "text": body,
+                        "segments": [
+                            {
+                                "index": 1,
+                                "start_ms": 0,
+                                "end_ms": 1000,
+                                "text": body,
+                                "audio_path": "/Users/old/segment.wav",
+                                "transcription_path": "/Users/old/segment.json",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            article_path.write_text(
+                build_transcription_article(title=title, body=body),
+                encoding="utf-8",
+            )
+            quality_report_path.write_text(
+                json.dumps({"segment_count": 1}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            restored = can_restore_completed_transcription(
+                transcription_path=transcription_path,
+                article_path=article_path,
+                quality_report_path=quality_report_path,
+                article_title=title,
+                expected_metadata={
+                    "eid": "abc",
+                    "episode_url": "https://example.com/episode",
+                },
+            )
+        self.assertTrue(restored)
+
+    def test_restore_rejects_episode_metadata_mismatch(self) -> None:
+        title = "节目标题"
+        body = "你好"
+        with TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            transcription_path = output_dir / "transcription.json"
+            article_path = output_dir / "transcription.md"
+            quality_report_path = output_dir / "transcription_quality_report.json"
+            transcription_path.write_text(
+                json.dumps(
+                    {
+                        "eid": "abc",
+                        "episode_url": "https://example.com/episode",
+                        "title": title,
+                        "segment_count": 1,
+                        "text": body,
+                        "segments": [
+                            {
+                                "index": 1,
+                                "start_ms": 0,
+                                "end_ms": 1000,
+                                "text": body,
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            article_path.write_text(
+                build_transcription_article(title=title, body=body),
+                encoding="utf-8",
+            )
+            quality_report_path.write_text(
+                json.dumps({"segment_count": 1}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            restored = can_restore_completed_transcription(
+                transcription_path=transcription_path,
+                article_path=article_path,
+                quality_report_path=quality_report_path,
+                article_title=title,
+                expected_metadata={
+                    "eid": "abc",
+                    "episode_url": "https://example.com/other",
+                },
+            )
+        self.assertFalse(restored)
