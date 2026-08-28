@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator, Callable, Protocol, cast
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Protocol, cast
 
 import certifi
 
 from podcast_job_finder.transcription.models import AudioTranscriptionError
 
 from .response import AsrResponseProtocol
+
+
+if TYPE_CHECKING:
+    from doubaoime_asr import ASRConfig  # type: ignore[import-untyped]
 
 
 DOUBAO_IMPORT_ERROR = (
@@ -23,7 +27,7 @@ class DoubaoResponseTypes(Protocol):
 
 
 def build_doubao_client() -> tuple[
-    object,
+    ASRConfig,
     Callable[..., AsyncIterator[AsrResponseProtocol]],
     DoubaoResponseTypes,
 ]:
@@ -42,7 +46,7 @@ def build_doubao_client() -> tuple[
     asr_config = ASRConfig(enable_speech_rejection=False)
     return cast(
         tuple[
-            object,
+            ASRConfig,
             Callable[..., AsyncIterator[AsrResponseProtocol]],
             DoubaoResponseTypes,
         ],

@@ -13,10 +13,12 @@ import tempfile
 import time
 import wave
 from collections import deque
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Iterator, Sequence
 
 from podcast_job_finder.audio.segmentation.segment_export import (
@@ -72,10 +74,12 @@ from .output import (
     build_doubao_transcription_output,
 )
 from .request_client import (
-    DoubaoRequestClient,
+    DoubaoJob,
     DoubaoRequestError,
     SessionResponses,
+    run_doubao_job,
 )
+from .request_scheduler import DoubaoRequestScheduler
 from .response import (
     AsrResponseProtocol,
     DOUBAO_RESPONSE_ERROR,
@@ -98,6 +102,10 @@ DOUBAO_ASR_SERVICE_ERROR = (
     "豆包 ASR 在 {count} 个不同音频片段发生服务或协议异常，达到停止阈值："
     "threshold={threshold} latest_path={path} latest_reason={reason}"
 )
+
+
+class DoubaoServiceErrorThresholdExceeded(AudioTranscriptionError):
+    """豆包服务异常片段达到阈值，本批次不能继续发送。"""
 
 
 @dataclass(slots=True, frozen=True)
@@ -150,7 +158,7 @@ class _PendingRequest:
     future: Future[SessionResponses]
 
 
-class DoubaoAudioTranscriber:
+class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
     """负责请求豆包、检查结果，并整理出带时间信息的文字。"""
 
     def __init__(  # pylint: disable=too-many-arguments
@@ -177,19 +185,28 @@ class DoubaoAudioTranscriber:
         self._silence_padding_ms = silence_padding_ms
         self._vad_threshold = vad_threshold
         self._service_error_segment_paths: set[Path] = set()
+        self._service_error_lock = Lock()
         self._aligner = aligner
 
-        # 豆包客户端负责发请求；这里同时拿到响应类型，后面用它判断最终结果。
+        # 拿到豆包识别函数和响应类型。识别函数交给调度器，响应类型用来判断最终结果。
         (
             asr_config,
             transcribe_stream,
             self._response_type,
         ) = build_doubao_client()
-        self._request_client = DoubaoRequestClient(
-            asr_config=asr_config,
-            transcribe_stream=transcribe_stream,
+        self._request_scheduler = DoubaoRequestScheduler(
             max_in_flight_requests=max_in_flight_requests,
-            request_interval_seconds=request_interval_seconds,
+            interval_seconds=request_interval_seconds,
+            worker=partial(
+                run_doubao_job,
+                transcribe_stream=transcribe_stream,
+                asr_config=asr_config,
+            ),
+        )
+        logger.info(
+            "豆包请求调度配置：request_interval_seconds=%.3f max_in_flight_requests=%d",
+            request_interval_seconds,
+            max_in_flight_requests,
         )
 
     @property
@@ -197,6 +214,46 @@ class DoubaoAudioTranscriber:
         """告诉上层一次最多可以同时等待多少个豆包请求。"""
 
         return self._max_in_flight_requests
+
+    def _submit_segment(
+        self,
+        segment: ExportedSpeechSegment,
+        *,
+        total_segment_count: int,
+    ) -> Future[SessionResponses]:
+        future = self._request_scheduler.submit(
+            DoubaoJob(
+                path=segment.file_path,
+                segment=segment,
+                total_segment_count=total_segment_count,
+            )
+        )
+        future.add_done_callback(partial(self._record_completed_request_error, segment))
+        return future
+
+    def _record_completed_request_error(
+        self,
+        segment: ExportedSpeechSegment,
+        future: Future[SessionResponses],
+    ) -> None:
+        """请求完成时立即统计豆包服务异常，不等待上层按片段顺序读取。"""
+
+        try:
+            error = future.exception()
+        except CancelledError:
+            return
+        if not isinstance(error, DoubaoRequestError):
+            return
+        try:
+            self._record_service_error_segment(segment, reason=str(error))
+        except DoubaoServiceErrorThresholdExceeded:
+            self._request_scheduler.cancel_pending()
+
+    def _recognize_path(self, path: Path) -> SessionResponses:
+        return self._request_scheduler.submit(
+            DoubaoJob(path=path),
+            high_priority=True,
+        ).result()
 
     def transcribe(
         self,
@@ -212,9 +269,7 @@ class DoubaoAudioTranscriber:
 
         # 先完成一次正常识别，后面的判断都基于这次结果进行。
         try:
-            initial_responses = self._request_client.collect_responses(
-                segment.file_path
-            )
+            initial_responses = self._recognize_path(segment.file_path)
             attempts = self._run_segment_attempts_with_fallback(
                 segment,
                 initial_responses,
@@ -255,45 +310,49 @@ class DoubaoAudioTranscriber:
         pending_requests: deque[_PendingRequest] = deque()
         current_previous = previous_segment
         total_segment_count = max(segment.index for segment in segments)
-
-        # 记住最早发生的错误；已提交的请求处理完后，再把错误交给上层。
-        first_error: Exception | None = None
+        # 先把这一组片段全部交给调度器排队。发送间隔由调度器控制，
+        # 不需要等当前片段识别或对齐结束才提交下一段。
         for segment in segments:
-            # 提交请求后立即继续提交下一个片段，让多个请求可以同时进行。
-            future = self._request_client.submit_segment(
+            future = self._submit_segment(
                 segment,
                 total_segment_count=total_segment_count,
             )
             pending_requests.append(_PendingRequest(segment, future))
 
-            # 队列未达到上限时继续提交，达到上限后才取出最早的请求。
-            if len(pending_requests) < self._max_in_flight_requests:
-                continue
+        first_error: Exception | None = None
+        skip_next_successful_result = False
+        try:
+            while pending_requests:
+                pending_request = pending_requests.popleft()
+                item, current_previous, error = self._consume_pending_request(
+                    pending_request,
+                    previous_segment=current_previous,
+                )
+                if error is not None:
+                    if isinstance(error, DoubaoServiceErrorThresholdExceeded):
+                        raise error
+                    if first_error is None:
+                        first_error = error
+                    # 下一片段依赖当前失败片段的识别结果去除重叠内容。即使下一片段
+                    # 请求成功，它的结果也不可靠，因此只用来恢复再下一片段的依赖。
+                    skip_next_successful_result = True
+                    continue
+                if item is not None and skip_next_successful_result:
+                    logger.warning(
+                        "上一音频片段失败，当前片段只用于恢复后续依赖，不写入检查点："
+                        "index=%d path=%s",
+                        item.segment.index,
+                        item.segment.file_path,
+                    )
+                    skip_next_successful_result = False
+                elif item is not None:
+                    # 成功结果马上交给上层，上层可以立刻写入片段检查点。
+                    yield (item,)
+        finally:
+            # 上层保存检查点失败或提前关闭生成器时，停止尚未发送的请求。
+            self._request_scheduler.cancel_pending()
 
-            item, current_previous, error = self._consume_pending_request(
-                pending_requests.popleft(),
-                previous_segment=current_previous,
-            )
-            if item is not None:
-                # 成功结果马上交给上层，上层可以立刻写入片段检查点。
-                yield (item,)
-            if error is not None:
-                # 停止提交新请求，已经提交的请求仍然会继续处理。
-                first_error = error
-                break
-
-        # 处理剩余的已提交请求，尽量保存其中已经成功的结果。
-        while pending_requests:
-            item, current_previous, error = self._consume_pending_request(
-                pending_requests.popleft(),
-                previous_segment=current_previous,
-            )
-            if item is not None:
-                yield (item,)
-            if error is not None and first_error is None:
-                first_error = error
-
-        # 所有已提交请求都处理完后，再把最早的错误报告给上层。
+        # 后续片段全部处理完后，再把最早的错误报告给上层。
         if first_error is not None:
             raise first_error
 
@@ -316,7 +375,7 @@ class DoubaoAudioTranscriber:
         try:
             # 等待后台请求完成，然后取得豆包这次返回的全部消息。
             responses = pending_request.future.result()
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except AudioTranscriptionError as error:
             # 后续片段只需要失败片段的编号和结束时间来去除重叠音频。
             return (
                 None,
@@ -334,7 +393,7 @@ class DoubaoAudioTranscriber:
                 responses,
                 previous_segment=previous_segment,
             )
-        except Exception as error:  # pylint: disable=broad-exception-caught
+        except AudioTranscriptionError as error:
             return (
                 None,
                 _build_failed_segment_context(pending_request.segment),
@@ -414,9 +473,7 @@ class DoubaoAudioTranscriber:
             outputs: list[TranscriptionOutput] = []
             current_previous = previous_segment
             for child_segment in child_segments:
-                responses = self._request_client.collect_responses(
-                    child_segment.file_path
-                )
+                responses = self._recognize_path(child_segment.file_path)
                 child_attempts = self._run_segment_attempts_with_fallback(
                     child_segment,
                     responses,
@@ -475,9 +532,7 @@ class DoubaoAudioTranscriber:
                         segment=segment.segment,
                         file_path=padded_path,
                     )
-                    padded_responses = self._request_client.collect_responses(
-                        padded_path
-                    )
+                    padded_responses = self._recognize_path(padded_path)
                     return self._run_segment_attempts(
                         padded_segment,
                         padded_responses,
@@ -514,7 +569,7 @@ class DoubaoAudioTranscriber:
                 audio_path=segment.file_path,
                 assessment=latest_attempt.assessment,
             ),
-            collect_responses=self._request_client.collect_probe_responses,
+            collect_responses=self._recognize_path,
             response_types=self._response_type,
         )
         log_truncation_probe_result(
@@ -636,7 +691,7 @@ class DoubaoAudioTranscriber:
     def close(self) -> None:
         """关闭请求调度器和负责查找文字时间的进程。"""
 
-        self._request_client.close()
+        self._request_scheduler.close()
         self._aligner.close()
 
     def _run_attempt(
@@ -647,7 +702,7 @@ class DoubaoAudioTranscriber:
     ) -> _AttemptResult:
         """重新请求整个片段，并整理这次请求的结果。"""
 
-        responses = self._request_client.collect_responses(segment.file_path)
+        responses = self._recognize_path(segment.file_path)
         return self._build_attempt_result(segment, responses, attempt=attempt)
 
     def _reported_request_error(
@@ -673,9 +728,10 @@ class DoubaoAudioTranscriber:
     ) -> None:
         """累计豆包服务或协议异常片段，达到阈值时停止批处理。"""
 
-        self._service_error_segment_paths.add(segment.file_path)
-        segment_count = len(self._service_error_segment_paths)
-        threshold = DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD
+        with self._service_error_lock:
+            self._service_error_segment_paths.add(segment.file_path)
+            segment_count = len(self._service_error_segment_paths)
+            threshold = DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD
         logger.warning(
             "豆包服务或协议异常片段：index=%d service_error_segments=%d "
             "threshold=%d path=%s reason=%s",
@@ -687,7 +743,7 @@ class DoubaoAudioTranscriber:
         )
         if segment_count < threshold:
             return
-        raise AudioTranscriptionError(
+        raise DoubaoServiceErrorThresholdExceeded(
             DOUBAO_ASR_SERVICE_ERROR.format(
                 count=segment_count,
                 threshold=threshold,

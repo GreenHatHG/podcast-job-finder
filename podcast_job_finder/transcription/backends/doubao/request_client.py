@@ -3,16 +3,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from podcast_job_finder.audio.segmentation.segment_export import ExportedSpeechSegment
 from podcast_job_finder.timestamps import format_duration_ms
 from podcast_job_finder.transcription.models import AudioTranscriptionError
 
-from .request_scheduler import DoubaoRequestScheduler
 from .response import AsrResponseProtocol
+
+
+if TYPE_CHECKING:
+    from doubaoime_asr import ASRConfig  # type: ignore[import-untyped]
 
 
 logger = logging.getLogger(__name__)
@@ -28,123 +31,55 @@ TranscribeStream = Callable[..., AsyncIterator[AsrResponseProtocol]]
 
 
 @dataclass(slots=True, frozen=True)
-class _DoubaoRequest:
+class DoubaoJob:
     path: Path
-    config: object
     segment: ExportedSpeechSegment | None = None
     total_segment_count: int | None = None
 
 
-class DoubaoRequestClient:
-    def __init__(
-        self,
-        *,
-        asr_config: object,
-        transcribe_stream: TranscribeStream,
-        max_in_flight_requests: int,
-        request_interval_seconds: float,
-    ) -> None:
-        self._asr_config = asr_config
-        self._transcribe_stream = transcribe_stream
-        self._request_scheduler = DoubaoRequestScheduler[
-            _DoubaoRequest,
-            SessionResponses,
-        ](
-            max_in_flight_requests=max_in_flight_requests,
-            interval_seconds=request_interval_seconds,
-            worker=self._run_scheduled_request,
-        )
+def run_doubao_job(
+    job: DoubaoJob,
+    *,
+    transcribe_stream: TranscribeStream,
+    asr_config: ASRConfig,
+) -> SessionResponses:
+    if job.segment is not None and job.total_segment_count is not None:
+        segment = job.segment.segment
         logger.info(
-            "豆包请求调度配置：request_interval_seconds=%.3f max_in_flight_requests=%d",
-            request_interval_seconds,
-            max_in_flight_requests,
+            "识别音频片段：progress=%d/%d start_ms=%d end_ms=%d "
+            "start=%s end=%s duration=%s",
+            job.segment.index,
+            job.total_segment_count,
+            segment.start_ms,
+            segment.end_ms,
+            format_duration_ms(segment.start_ms),
+            format_duration_ms(segment.end_ms),
+            format_duration_ms(segment.duration_ms),
         )
-
-    def submit_segment(
-        self,
-        segment: ExportedSpeechSegment,
-        *,
-        total_segment_count: int,
-    ) -> Future[SessionResponses]:
-        return self._request_scheduler.submit(
-            _DoubaoRequest(
-                path=segment.file_path,
-                config=self._asr_config,
-                segment=segment,
-                total_segment_count=total_segment_count,
-            )
+    return asyncio.run(
+        _read_transcribe_stream(
+            job.path,
+            asr_config,
+            transcribe_stream,
         )
+    )
 
-    def collect_responses(self, path: Path) -> SessionResponses:
-        return asyncio.run(
-            self._collect_responses_with_config(
-                path,
-                self._asr_config,
-            )
-        )
 
-    async def collect_probe_responses(self, path: Path) -> SessionResponses:
-        return await self._collect_responses_with_config(
+async def _read_transcribe_stream(
+    path: Path,
+    config: ASRConfig,
+    transcribe_stream: TranscribeStream,
+) -> SessionResponses:
+    responses = []
+    try:
+        async for response in transcribe_stream(
             path,
-            self._asr_config,
-        )
-
-    def close(self) -> None:
-        self._request_scheduler.close()
-
-    def _run_scheduled_request(
-        self,
-        request: _DoubaoRequest,
-    ) -> SessionResponses:
-        if request.segment is not None and request.total_segment_count is not None:
-            segment = request.segment.segment
-            logger.info(
-                "识别音频片段：progress=%d/%d start_ms=%d end_ms=%d "
-                "start=%s end=%s duration=%s",
-                request.segment.index,
-                request.total_segment_count,
-                segment.start_ms,
-                segment.end_ms,
-                format_duration_ms(segment.start_ms),
-                format_duration_ms(segment.end_ms),
-                format_duration_ms(segment.duration_ms),
-            )
-        return asyncio.run(
-            self._collect_stream_responses(
-                request.path,
-                request.config,
-            )
-        )
-
-    async def _collect_responses_with_config(
-        self,
-        path: Path,
-        config: object,
-    ) -> SessionResponses:
-        future = await asyncio.to_thread(
-            self._request_scheduler.submit,
-            _DoubaoRequest(
-                path=path,
-                config=config,
-            ),
-        )
-        return await asyncio.wrap_future(future)
-
-    async def _collect_stream_responses(
-        self,
-        path: Path,
-        config: object,
-    ) -> SessionResponses:
-        responses = []
-        try:
-            async for response in self._transcribe_stream(
-                path,
-                config=config,
-                realtime=True,
-            ):
-                responses.append(response)
-        except Exception as error:
-            raise DoubaoRequestError(
-                DOUBAO_REQUEST_ERROR.format(path=path, error=error)
-            ) from error
-        return responses
+            config=config,
+            realtime=True,
+        ):
+            responses.append(response)
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        raise DoubaoRequestError(
+            DOUBAO_REQUEST_ERROR.format(path=path, error=error)
+        ) from error
+    return responses

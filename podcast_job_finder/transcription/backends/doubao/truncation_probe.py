@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import tempfile
 import wave
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Final, Iterator, Protocol
+from typing import Callable, Final, Iterator, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -46,7 +45,7 @@ class ProbeResponseTypes(Protocol):
 ProbeResponse = list[AsrResponseProtocol] | DoubaoRequestError
 CollectResponses = Callable[
     [Path],
-    Coroutine[Any, Any, list[AsrResponseProtocol]],
+    list[AsrResponseProtocol],
 ]
 
 
@@ -74,7 +73,7 @@ def run_doubao_truncation_probe(
         request.assessment,
     ) as probe:
         try:
-            responses: ProbeResponse = asyncio.run(collect_responses(probe.path))
+            responses: ProbeResponse = collect_responses(probe.path)
         except DoubaoRequestError as error:
             responses = error
         return _build_probe_diagnostics(probe, responses, response_types=response_types)
