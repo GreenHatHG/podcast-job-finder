@@ -52,6 +52,7 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
         self._normal_jobs: deque[_ScheduledJob[Request, Response]] = deque()
         self._in_flight_requests = 0
         self._next_allowed_at: float | None = None
+        self._log_completed_jobs = False
         self._closed = False
         self._condition = Condition()
         self._executor = ThreadPoolExecutor(max_workers=max_in_flight_requests)
@@ -76,6 +77,7 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
                 self._high_priority_jobs.append(job)
             else:
                 self._normal_jobs.append(job)
+            self._log_completed_jobs = False
             # 发送线程可能正在等队列里出现新任务，这里唤醒它重新检查。
             self._condition.notify()
         return future
@@ -151,6 +153,9 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
             )
             job = jobs.popleft()
             if not job.future.cancelled():
+                self._log_completed_jobs = not (
+                    self._high_priority_jobs or self._normal_jobs
+                )
                 return job
 
     def _start_job(self, job: _ScheduledJob[Request, Response]) -> None:
@@ -163,7 +168,8 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
             raise
 
     def _run_job(self, job: _ScheduledJob[Request, Response]) -> None:
-        job.started_at = monotonic()
+        started_at = monotonic()
+        job.started_at = started_at
         job.started.set()
         with self._condition:
             in_flight_requests = self._in_flight_requests
@@ -175,13 +181,30 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
             self._max_in_flight_requests,
             queued_requests,
         )
+        status = "成功"
         try:
             job.future.set_result(self._worker(job.request))
         except Exception as error:  # pylint: disable=broad-exception-caught
+            status = f"失败 error_type={type(error).__name__}"
             if not job.future.done():
                 job.future.set_exception(error)
         finally:
             self._release_in_flight()
+            with self._condition:
+                in_flight_requests = self._in_flight_requests
+                queued_requests = len(self._high_priority_jobs) + len(self._normal_jobs)
+                should_log_completion = self._log_completed_jobs
+            if should_log_completion:
+                logger.info(
+                    "豆包请求结束（队列已清空）：%s status=%s elapsed_seconds=%.1f "
+                    "in_flight=%d/%d queued=%d",
+                    self._request_description(job.request),
+                    status,
+                    monotonic() - started_at,
+                    in_flight_requests,
+                    self._max_in_flight_requests,
+                    queued_requests,
+                )
 
     def _release_in_flight(self) -> None:
         with self._condition:

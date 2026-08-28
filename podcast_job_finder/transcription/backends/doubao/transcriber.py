@@ -58,6 +58,7 @@ from podcast_job_finder.transcription.diagnostics import (
 from podcast_job_finder.transcription.quality import (
     assess_transcription_coverage,
 )
+from podcast_job_finder.timestamps import format_duration_ms
 from podcast_job_finder.audio.segmentation.speech_pipeline import (
     DEFAULT_SILENCE_PADDING_MS,
 )
@@ -109,9 +110,13 @@ DOUBAO_ASR_SERVICE_ERROR = (
 def _describe_doubao_job(job: DoubaoJob) -> str:
     if job.segment is None or job.total_segment_count is None:
         return f"path={job.path} type=probe_or_retry"
+    segment = job.segment.segment
     return (
         f"index={job.segment.index}/{job.total_segment_count} "
-        f"path={job.path} type=segment"
+        f"path={job.path} type=segment "
+        f"start={format_duration_ms(segment.start_ms)} "
+        f"end={format_duration_ms(segment.end_ms)} "
+        f"duration={format_duration_ms(segment.duration_ms)}"
     )
 
 
