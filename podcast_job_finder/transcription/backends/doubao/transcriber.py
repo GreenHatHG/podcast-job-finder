@@ -399,7 +399,14 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
         返回值依次表示：转写结果、供下一个片段使用的前一片段信息、错误。
         这样即使某个请求失败，也能先处理其它已经在途并成功返回的请求。
         """
-
+        segment = pending_request.segment
+        logger.info(
+            "豆包片段结果读取开始：index=%d path=%s request_ready=%s",
+            segment.index,
+            segment.file_path,
+            pending_request.future.done(),
+        )
+        request_wait_started_at = time.monotonic()
         try:
             # 等待后台请求完成，然后取得豆包这次返回的全部消息。
             responses = pending_request.future.result()
@@ -407,30 +414,56 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
             # 后续片段只需要失败片段的编号和结束时间来去除重叠音频。
             return (
                 None,
-                _build_failed_segment_context(pending_request.segment),
-                self._reported_request_error(pending_request.segment, error),
+                _build_failed_segment_context(segment),
+                self._reported_request_error(segment, error),
             )
+        logger.info(
+            "豆包片段结果读取完成：index=%d path=%s elapsed_seconds=%.3f",
+            segment.index,
+            segment.file_path,
+            time.monotonic() - request_wait_started_at,
+        )
+        processing_started_at = time.monotonic()
+        logger.info(
+            "豆包片段结果整理开始：index=%d path=%s",
+            segment.index,
+            segment.file_path,
+        )
         try:
             # 整理返回消息，检查是否有一段人声没有对应文字，并在需要时重试。
             validate_previous_segment_order(
-                pending_request.segment,
+                segment,
                 previous_segment,
             )
             item = self._build_transcription_item(
-                pending_request.segment,
+                segment,
                 responses,
                 previous_segment=previous_segment,
             )
         except AudioTranscriptionError as error:
+            logger.info(
+                "豆包片段结果整理失败：index=%d path=%s elapsed_seconds=%.3f "
+                "error_type=%s",
+                segment.index,
+                segment.file_path,
+                time.monotonic() - processing_started_at,
+                type(error).__name__,
+            )
             return (
                 None,
-                _build_failed_segment_context(pending_request.segment),
-                self._reported_request_error(pending_request.segment, error),
+                _build_failed_segment_context(segment),
+                self._reported_request_error(segment, error),
             )
+        logger.info(
+            "豆包片段结果整理完成：index=%d path=%s elapsed_seconds=%.3f",
+            segment.index,
+            segment.file_path,
+            time.monotonic() - processing_started_at,
+        )
         return (
             item,
             # 下一片段需要使用当前片段的完整结果作为参考。
-            build_transcribed_speech_segment(pending_request.segment, item.output),
+            build_transcribed_speech_segment(segment, item.output),
             None,
         )
 
@@ -813,12 +846,38 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
                 segment.index,
                 segment.file_path,
             )
-        alignments = (
+        if response_summary.text:
+            alignment_started_at = time.monotonic()
+            logger.info(
+                "FireRed CTC 对齐开始：index=%d path=%s text_length=%d",
+                segment.index,
+                segment.file_path,
+                len(response_summary.text),
+            )
+            try:
+                alignments = self._aligner.align(
+                    segment.file_path,
+                    response_summary.text,
+                )
+            except AudioTranscriptionError:
+                logger.exception(
+                    "FireRed CTC 对齐失败：index=%d path=%s elapsed_seconds=%.3f",
+                    segment.index,
+                    segment.file_path,
+                    time.monotonic() - alignment_started_at,
+                )
+                raise
+            logger.info(
+                "FireRed CTC 对齐完成：index=%d path=%s elapsed_seconds=%.3f "
+                "alignment_count=%d",
+                segment.index,
+                segment.file_path,
+                time.monotonic() - alignment_started_at,
+                len(alignments),
+            )
+        else:
             # 没有文字时无需查找每个字的时间，直接检查音频里是否有人说话。
-            self._aligner.align(segment.file_path, response_summary.text)
-            if response_summary.text
-            else ()
-        )
+            alignments = ()
         # 比较“有人说话的时间”和“文字出现的时间”，找出是否有一段人声没有文字。
         assessment = assess_transcription_coverage(
             segment.file_path,
