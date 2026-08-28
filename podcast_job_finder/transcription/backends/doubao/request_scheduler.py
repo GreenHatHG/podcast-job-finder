@@ -13,6 +13,7 @@ from typing import Generic, TypeVar
 
 Request = TypeVar("Request")
 Response = TypeVar("Response")
+RequestDescription = Callable[[Request], str]
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +38,7 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
         max_in_flight_requests: int,
         interval_seconds: float,
         worker: Callable[[Request], Response],
+        request_description: RequestDescription | None = None,
     ) -> None:
         if max_in_flight_requests <= 0:
             raise ValueError("max_in_flight_requests 必须大于 0。")
@@ -45,6 +47,7 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
         self._interval_seconds = interval_seconds
         self._max_in_flight_requests = max_in_flight_requests
         self._worker = worker
+        self._request_description = request_description or _default_request_description
         self._high_priority_jobs: deque[_ScheduledJob[Request, Response]] = deque()
         self._normal_jobs: deque[_ScheduledJob[Request, Response]] = deque()
         self._in_flight_requests = 0
@@ -162,6 +165,16 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
     def _run_job(self, job: _ScheduledJob[Request, Response]) -> None:
         job.started_at = monotonic()
         job.started.set()
+        with self._condition:
+            in_flight_requests = self._in_flight_requests
+            queued_requests = len(self._high_priority_jobs) + len(self._normal_jobs)
+        logger.info(
+            "豆包请求开始：%s in_flight=%d/%d queued=%d",
+            self._request_description(job.request),
+            in_flight_requests,
+            self._max_in_flight_requests,
+            queued_requests,
+        )
         try:
             job.future.set_result(self._worker(job.request))
         except Exception as error:  # pylint: disable=broad-exception-caught
@@ -194,3 +207,7 @@ class DoubaoRequestScheduler(Generic[Request, Response]):  # pylint: disable=too
 def _cancel_jobs(jobs: list[_ScheduledJob[Request, Response]]) -> None:
     for job in jobs:
         job.future.cancel()
+
+
+def _default_request_description(request: object) -> str:
+    return f"request={request!r}"

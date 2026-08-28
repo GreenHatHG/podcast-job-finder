@@ -45,8 +45,8 @@ def run_doubao_job(
 ) -> SessionResponses:
     if job.segment is not None and job.total_segment_count is not None:
         segment = job.segment.segment
-        logger.info(
-            "识别音频片段：progress=%d/%d start_ms=%d end_ms=%d "
+        logger.debug(
+            "豆包请求详情：progress=%d/%d start_ms=%d end_ms=%d "
             "start=%s end=%s duration=%s",
             job.segment.index,
             job.total_segment_count,

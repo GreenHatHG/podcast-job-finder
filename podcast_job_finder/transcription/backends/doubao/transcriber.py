@@ -4,6 +4,8 @@
 它会重试空结果，并在识别结果疑似漏内容时检查可疑位置、决定是否完整重试。
 """
 
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import logging
@@ -104,6 +106,15 @@ DOUBAO_ASR_SERVICE_ERROR = (
 )
 
 
+def _describe_doubao_job(job: DoubaoJob) -> str:
+    if job.segment is None or job.total_segment_count is None:
+        return f"path={job.path} type=probe_or_retry"
+    return (
+        f"index={job.segment.index}/{job.total_segment_count} "
+        f"path={job.path} type=segment"
+    )
+
+
 class DoubaoServiceErrorThresholdExceeded(AudioTranscriptionError):
     """豆包服务异常片段达到阈值，本批次不能继续发送。"""
 
@@ -186,6 +197,9 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
         self._vad_threshold = vad_threshold
         self._service_error_segment_paths: set[Path] = set()
         self._service_error_lock = Lock()
+        self._service_error_threshold_error: (
+            DoubaoServiceErrorThresholdExceeded | None
+        ) = None
         self._aligner = aligner
 
         # 拿到豆包识别函数和响应类型。识别函数交给调度器，响应类型用来判断最终结果。
@@ -202,6 +216,7 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
                 transcribe_stream=transcribe_stream,
                 asr_config=asr_config,
             ),
+            request_description=_describe_doubao_job,
         )
         logger.info(
             "豆包请求调度配置：request_interval_seconds=%.3f max_in_flight_requests=%d",
@@ -221,13 +236,21 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
         *,
         total_segment_count: int,
     ) -> Future[SessionResponses]:
-        future = self._request_scheduler.submit(
-            DoubaoJob(
-                path=segment.file_path,
-                segment=segment,
-                total_segment_count=total_segment_count,
+        with self._service_error_lock:
+            threshold_error = getattr(
+                self,
+                "_service_error_threshold_error",
+                None,
             )
-        )
+            if threshold_error is not None:
+                raise threshold_error
+            future = self._request_scheduler.submit(
+                DoubaoJob(
+                    path=segment.file_path,
+                    segment=segment,
+                    total_segment_count=total_segment_count,
+                )
+            )
         future.add_done_callback(partial(self._record_completed_request_error, segment))
         return future
 
@@ -728,10 +751,21 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
     ) -> None:
         """累计豆包服务或协议异常片段，达到阈值时停止批处理。"""
 
+        threshold_error: DoubaoServiceErrorThresholdExceeded | None = None
         with self._service_error_lock:
             self._service_error_segment_paths.add(segment.file_path)
             segment_count = len(self._service_error_segment_paths)
             threshold = DOUBAO_MISSING_FINAL_SEGMENT_THRESHOLD
+            if segment_count >= threshold:
+                threshold_error = DoubaoServiceErrorThresholdExceeded(
+                    DOUBAO_ASR_SERVICE_ERROR.format(
+                        count=segment_count,
+                        threshold=threshold,
+                        path=segment.file_path,
+                        reason=reason,
+                    )
+                )
+                self._service_error_threshold_error = threshold_error
         logger.warning(
             "豆包服务或协议异常片段：index=%d service_error_segments=%d "
             "threshold=%d path=%s reason=%s",
@@ -743,14 +777,8 @@ class DoubaoAudioTranscriber:  # pylint: disable=too-many-instance-attributes
         )
         if segment_count < threshold:
             return
-        raise DoubaoServiceErrorThresholdExceeded(
-            DOUBAO_ASR_SERVICE_ERROR.format(
-                count=segment_count,
-                threshold=threshold,
-                path=segment.file_path,
-                reason=reason,
-            )
-        )
+        assert threshold_error is not None
+        raise threshold_error
 
     def _build_attempt_result(
         self,

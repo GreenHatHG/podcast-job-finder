@@ -155,18 +155,22 @@ class DoubaoBatchFailureTest(TestCase):
             _failed_future(DoubaoRequestError(f"failure {index}"))
             for index in range(2, 7)
         )
+        futures.append(_successful_future())
         transcriber = object.__new__(DoubaoAudioTranscriber)
         transcriber._request_scheduler = Mock(  # type: ignore[attr-defined]
             submit=Mock(side_effect=futures)
         )
         transcriber._service_error_segment_paths = set()  # type: ignore[attr-defined]
         transcriber._service_error_lock = Lock()  # type: ignore[attr-defined]
-        segments = [_segment(index) for index in range(1, 7)]
+        transcriber._service_error_threshold_error = None  # type: ignore[attr-defined]
+        segments = [_segment(index) for index in range(1, 8)]
 
-        for segment in segments:
-            transcriber._submit_segment(segment, total_segment_count=6)
+        with self.assertRaises(DoubaoServiceErrorThresholdExceeded):
+            for segment in segments:
+                transcriber._submit_segment(segment, total_segment_count=7)
 
         self.assertEqual(len(transcriber._service_error_segment_paths), 5)
+        self.assertEqual(transcriber._request_scheduler.submit.call_count, 6)
         transcriber._request_scheduler.cancel_pending.assert_called_once_with()
 
 
