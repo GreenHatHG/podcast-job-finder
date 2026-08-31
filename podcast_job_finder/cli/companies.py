@@ -163,7 +163,7 @@ def _run_feed_command(raw_args: Sequence[str]) -> int:
                 processing_mode=parsed_args.audio_processing_mode,
                 resume=parsed_args.resume,
             )
-        if parsed_args.delete_audio:
+        if exit_code == 0 and parsed_args.delete_audio:
             delete_completed_episode_audio_files(work_items)
         return exit_code
     return _run_feed_page_mode(feed, work_items)

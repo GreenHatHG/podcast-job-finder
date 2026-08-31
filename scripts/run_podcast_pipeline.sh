@@ -5,9 +5,9 @@
 # 播客名来自项目根目录的 podcasts.toml；也可以继续直接传 RSS 地址。请在项目
 # 根目录运行脚本，脚本会从当前目录的 .env 读取模型地址、密钥等运行配置。
 # 每个阶段失败后最多再尝试到第 5 次；成功后立即进入下一阶段。全部终端输出会
-# 追加到 podcast_pipeline.log。转写完成后会删除已完成节目的音频。重复运行时
-# 会复用已完成转写和公司提取的检查点；下载阶段若发现音频不在，会重新下载，
-# 随后转写阶段会跳过已经完成的节目。
+# 追加到 podcast_pipeline.log。转写和公司提取全部成功后，会删除已完成节目的
+# 音频。重复运行时会复用已完成转写和公司提取的检查点；下载阶段若发现音频
+# 不在，会重新下载，随后转写阶段会跳过已经完成的节目。
 
 # 后面的命令会通过 tee 同时输出到终端和日志。pipefail 可以避免 tee 成功时
 # 掩盖前面实际处理命令的失败状态。
@@ -110,25 +110,25 @@ for podcast_reference in "${PODCAST_REFERENCES[@]}"; do
     uv run podcast-download-rss "$podcast_reference" || exit $?
 
   # --transcribe-only 让命令只生成转写结果；--resume 会复用已经完成的转写结果，
-  # 不需要本地音频文件。--delete-audio 会在当前播客的节目处理完后，删除已经
-  # 完成转写的节目音频，避免占用磁盘；尚未完成的节目会保留音频，便于重试。
-  # 只有整个转写阶段成功后，脚本才会进入公司提取阶段。
+  # 不需要本地音频文件。只有整个转写阶段成功后，脚本才会进入公司提取阶段。
   run_stage "转写全部音频" \
     uv run podcast-find-jobs \
     "${feed_input[@]}" \
     --source audio \
     --transcribe-only \
-    --resume \
-    --delete-audio || exit $?
+    --resume || exit $?
 
   # --extract-only 只读取已有转写，不重新转写音频；--resume 会复用通过校验的公司
-  # 提取检查点，因此重试时主要继续处理之前失败或尚未完成的内容。
+  # 提取检查点，因此重试时主要继续处理之前失败或尚未完成的内容。--delete-audio
+  # 只会在公司提取返回退出码 0 后删除已完成转写的节目音频；退出码非 0 时保留
+  # 音频，供下次重试使用。
   run_stage "从全部转写结果提取公司" \
     uv run podcast-find-jobs \
     "${feed_input[@]}" \
     --source audio \
     --extract-only \
-    --resume || exit $?
+    --resume \
+    --delete-audio || exit $?
 
   echo "===== 播客处理完成：${podcast_reference} =====" | tee -a "$LOG_FILE"
 done
