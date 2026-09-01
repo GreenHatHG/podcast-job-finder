@@ -10,6 +10,7 @@ from podcast_job_finder.episode.models import EpisodeResult
 
 RESULT_STATUS_SUCCESS: Final = "success"
 RESULT_STATUS_ERROR: Final = "error"
+RESULT_STATUS_SKIPPED: Final = "skipped"
 
 
 @dataclass(slots=True, frozen=True)
@@ -55,8 +56,21 @@ class FailedEpisodeTranscriptionResult(EpisodeResult):
         return payload
 
 
+@dataclass(slots=True, frozen=True)
+class SkippedEpisodeTranscriptionResult(EpisodeResult):
+    reason: str
+    status: Literal["skipped"] = field(init=False, default=RESULT_STATUS_SKIPPED)
+
+    def to_dict(self) -> dict[str, object]:
+        payload = EpisodeResult.to_dict(self)
+        payload.update({"cached": False, "reason": self.reason})
+        return payload
+
+
 EpisodeTranscriptionResult: TypeAlias = (
-    SuccessfulEpisodeTranscriptionResult | FailedEpisodeTranscriptionResult
+    SuccessfulEpisodeTranscriptionResult
+    | FailedEpisodeTranscriptionResult
+    | SkippedEpisodeTranscriptionResult
 )
 
 
@@ -64,8 +78,8 @@ EpisodeTranscriptionResult: TypeAlias = (
 class BatchAudioTranscriptionResult:
     """保存一次批量音频转写产生的节目记录和数量统计。
 
-    普通音频模式创建的结果包含本次选中的全部节目：转写成功和失败的节目都会
-    保留一条记录。失败记录只用于保存失败原因，不代表该节目已经得到转写文本。
+    普通音频模式创建的结果包含本次选中的全部节目：转写成功、失败和跳过的节目
+    都会保留一条记录。失败记录只用于保存失败原因，不代表该节目已经得到转写文本。
 
     ``--extract-only`` 模式从已有文件创建结果，只加入存在 ``transcription.json``
     的节目；缺少该文件的节目在创建对象前已经跳过。这个对象不保存 RSS feed
@@ -77,5 +91,6 @@ class BatchAudioTranscriptionResult:
     episode_results: list[EpisodeTranscriptionResult]
     # episode_results 中 status 为 success 的记录数量。
     success_count: int
-    # episode_results 中除 success 以外的记录数量，不包括创建对象前跳过的节目。
+    # episode_results 中 status 为 error 的记录数量，不包括 skipped 记录，也不包括
+    # 创建对象前跳过的节目。
     fail_count: int

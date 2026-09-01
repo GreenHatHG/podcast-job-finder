@@ -28,6 +28,7 @@ from podcast_job_finder.transcription.manifest import load_episode_transcript
 from podcast_job_finder.transcription.pipeline_results import (
     BatchAudioTranscriptionResult,
     EpisodeTranscriptionResult,
+    FailedEpisodeTranscriptionResult,
     SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.output_paths import (
@@ -99,7 +100,13 @@ def run_batch_audio_company_extraction(
     return BatchEpisodePipelineResult(
         episode_results=finalized_results,
         success_count=success_count,
-        fail_count=len(finalized_results) - success_count,
+        fail_count=sum(
+            isinstance(
+                result,
+                (FailedCompanyEpisodeResult, FailedEpisodeTranscriptionResult),
+            )
+            for result in finalized_results
+        ),
     )
 
 

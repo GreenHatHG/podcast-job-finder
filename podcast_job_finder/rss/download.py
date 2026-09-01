@@ -16,7 +16,10 @@ from podcast_job_finder.rss.feed import (
     RssFeedError,
     fetch_rss_feed,
 )
-from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
+from podcast_job_finder.audio.episode_audio.errors import (
+    EpisodeAudioDownloadError,
+    EpisodeAudioNotFoundError,
+)
 from podcast_job_finder.audio.episode_audio.files import (
     SOURCE_FILE_STEM,
     prepare_episode_audio_directory,
@@ -159,6 +162,19 @@ def _download_episodes(
                 episode.audio_url,
                 target_path,
                 overwrite=overwrite,
+            )
+        except EpisodeAudioNotFoundError as error:
+            entry.status = "skipped"
+            entry.error = str(error)
+            logger.warning(
+                "RSS 节目音频重试后仍返回 404，跳过当前节目：podcast=%s "
+                "episode_progress=%d/%d episode_id=%s title=%s error=%s",
+                feed.title,
+                episode_number,
+                total_episodes,
+                episode.episode_id,
+                episode.title,
+                error,
             )
         except EpisodeAudioDownloadError as error:
             entry.status = "failed"

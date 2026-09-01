@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from podcast_job_finder.audio import ExportedSpeechSegment
-from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
+from podcast_job_finder.audio.episode_audio.errors import (
+    EpisodeAudioDownloadError,
+    EpisodeAudioNotFoundError,
+)
 from podcast_job_finder.audio.episode_audio.files import (
     build_audio_target_path,
     prepare_episode_output_directory,
@@ -39,6 +42,7 @@ from podcast_job_finder.transcription.models import AudioTranscriptionResult
 from podcast_job_finder.transcription.pipeline_results import (
     EpisodeTranscriptionResult,
     FailedEpisodeTranscriptionResult,
+    SkippedEpisodeTranscriptionResult,
     SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.quality_report import (
@@ -146,6 +150,16 @@ def prepare_episode_audio(
             context=context,
             local_path=local_path,
             source_url=source_url,
+        )
+    except EpisodeAudioNotFoundError as error:
+        logger.warning(
+            "节目音频 404，重试后跳过：eid=%s error=%s",
+            work_item.resolve_episode_id() or "unknown",
+            error,
+        )
+        return SkippedEpisodeTranscriptionResult(
+            episode=work_item,
+            reason=str(error),
         )
     except EpisodeProcessingError as error:
         logger.info("节目音频准备失败：%s", error)

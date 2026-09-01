@@ -32,6 +32,7 @@ from podcast_job_finder.transcription import pipeline_results
 from podcast_job_finder.transcription.pipeline_results import (
     EpisodeTranscriptionResult,
     BatchAudioTranscriptionResult,
+    FailedEpisodeTranscriptionResult,
     SuccessfulEpisodeTranscriptionResult,
 )
 from podcast_job_finder.transcription.manifest import TRANSCRIPTION_FILE_NAME
@@ -108,7 +109,10 @@ def run_batch_audio_transcription(  # pylint: disable=too-many-arguments
     return BatchAudioTranscriptionResult(
         episode_results=episode_results,
         success_count=success_count,
-        fail_count=len(episode_results) - success_count,
+        fail_count=sum(
+            isinstance(result, FailedEpisodeTranscriptionResult)
+            for result in episode_results
+        ),
     )
 
 

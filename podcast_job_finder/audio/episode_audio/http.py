@@ -10,7 +10,10 @@ from typing import BinaryIO, Final, TypeGuard
 
 import requests
 
-from podcast_job_finder.audio.episode_audio.errors import EpisodeAudioDownloadError
+from podcast_job_finder.audio.episode_audio.errors import (
+    EpisodeAudioDownloadError,
+    EpisodeAudioNotFoundError,
+)
 from podcast_job_finder.environment import get_optional_env_value
 from podcast_job_finder.errors import ConfigurationError
 from podcast_job_finder.http.user_agents import DEFAULT_BROWSER_USER_AGENT
@@ -34,6 +37,7 @@ MAX_DOWNLOAD_CONNECTIONS: Final = 16
 DOWNLOAD_CONNECTIONS_ENV: Final = "EPISODE_AUDIO_DOWNLOAD_CONNECTIONS"
 RANGE_HEADER_NAME: Final = "Range"
 FALLBACK_RANGE_STATUS_CODES: Final = frozenset({200, 400, 403, 416})
+NOT_FOUND_STATUS_CODE: Final = 404
 RETRYABLE_TOO_MANY_REQUESTS_STATUS: Final = 429
 RETRYABLE_SERVER_ERROR_STATUS_MIN: Final = 500
 USER_AGENT_HEADER_NAME: Final = "User-Agent"
@@ -167,14 +171,24 @@ def download_audio_content(
             connections,
         )
     except requests.RequestException as error:
-        raise EpisodeAudioDownloadError(
+        error_type = (
+            EpisodeAudioNotFoundError
+            if _is_not_found_request_error(error)
+            else EpisodeAudioDownloadError
+        )
+        raise error_type(
             REQUEST_AUDIO_ERROR_TEMPLATE.format(
                 url=source_url,
                 error_message=str(error),
             )
         ) from error
     except BaseExceptionGroup as error:
-        raise EpisodeAudioDownloadError(
+        error_type = (
+            EpisodeAudioNotFoundError
+            if _is_not_found_error_group(error)
+            else EpisodeAudioDownloadError
+        )
+        raise error_type(
             REQUEST_AUDIO_ERROR_TEMPLATE.format(
                 url=source_url,
                 error_message=_format_download_error_message(error),
@@ -315,8 +329,28 @@ def _is_retryable_request_error(error: requests.RequestException) -> bool:
         return False
     status_code = error.response.status_code
     return (
-        status_code == RETRYABLE_TOO_MANY_REQUESTS_STATUS
+        status_code in (NOT_FOUND_STATUS_CODE, RETRYABLE_TOO_MANY_REQUESTS_STATUS)
         or status_code >= RETRYABLE_SERVER_ERROR_STATUS_MIN
+    )
+
+
+def _is_not_found_request_error(error: requests.RequestException) -> bool:
+    return (
+        isinstance(error, requests.HTTPError)
+        and error.response is not None
+        and error.response.status_code == NOT_FOUND_STATUS_CODE
+    )
+
+
+def _is_not_found_error_group(error: BaseExceptionGroup) -> bool:
+    return bool(error.exceptions) and all(
+        (
+            _is_not_found_error_group(inner)
+            if isinstance(inner, BaseExceptionGroup)
+            else isinstance(inner, requests.RequestException)
+            and _is_not_found_request_error(inner)
+        )
+        for inner in error.exceptions
     )
 
 
